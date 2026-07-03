@@ -1,6 +1,7 @@
 //! Client for herdr's newline-delimited JSON API over `$HERDR_SOCKET_PATH`.
 //!
-//! One request per line, one response per line:
+//! One request per line, one response per line — and one request per
+//! CONNECTION (herdr hangs up after answering; see `SocketClient`):
 //!   -> {"id":"1","method":"tab.list","params":{}}
 //!   <- {"id":"1","result":{"type":"tab_list","tabs":[...]}}
 //!   <- {"id":"1","error":{"code":"tab_not_found","message":"..."}}
@@ -98,24 +99,33 @@ fn extract_payload<T: serde::de::DeserializeOwned>(
         .with_context(|| format!("could not parse {field} out of a {expected_type} result"))
 }
 
+/// herdr's API server answers exactly ONE request per connection (only
+/// events.subscribe and pane.wait_for_output keep the stream open), so the
+/// client dials a fresh connection for every call.
 #[derive(Debug)]
 pub struct SocketClient {
-    reader: BufReader<UnixStream>,
+    socket_path: std::path::PathBuf,
     next_id: u64,
 }
 
 impl SocketClient {
     pub fn connect(socket_path: &Path) -> Result<Self> {
-        let stream = UnixStream::connect(socket_path).with_context(|| {
+        // Probe now so a dead socket fails at startup with a clear message
+        // instead of on the first request.
+        Self::dial(socket_path)?;
+        Ok(SocketClient {
+            socket_path: socket_path.to_path_buf(),
+            next_id: 1,
+        })
+    }
+
+    fn dial(socket_path: &Path) -> Result<UnixStream> {
+        UnixStream::connect(socket_path).with_context(|| {
             format!(
                 "cannot connect to the herdr API socket at {}; \
                  the picker must run inside a herdr session",
                 socket_path.display()
             )
-        })?;
-        Ok(SocketClient {
-            reader: BufReader::new(stream),
-            next_id: 1,
         })
     }
 
@@ -123,16 +133,16 @@ impl SocketClient {
         let id = self.next_id.to_string();
         self.next_id += 1;
 
+        let mut reader = BufReader::new(Self::dial(&self.socket_path)?);
         let line = request_line(&id, method, params);
-        let stream = self.reader.get_mut();
+        let stream = reader.get_mut();
         stream
             .write_all(line.as_bytes())
             .and_then(|_| stream.write_all(b"\n"))
             .with_context(|| format!("failed to send {method} request to herdr"))?;
 
         let mut response = String::new();
-        let read = self
-            .reader
+        let read = reader
             .read_line(&mut response)
             .with_context(|| format!("failed to read herdr's {method} response"))?;
         if read == 0 {
@@ -301,9 +311,12 @@ mod tests {
 
     // --- Group E: SocketClient against a fake server ---
 
-    /// One-connection fake herdr. Replies with the canned lines in order,
-    /// one per received request line, then closes. Join to get the raw
-    /// request lines the client sent.
+    /// Fake herdr mirroring the real server's connection model: ONE request
+    /// per connection (herdr's handle_connection reads a single line, writes
+    /// a single response, and hangs up). Each canned response is served on
+    /// its own accepted connection; connections with no request (probes) are
+    /// tolerated; once the responses run out the next request gets a silent
+    /// hang-up. Join to get the raw request lines the client sent.
     fn spawn_fake_server(responses: Vec<String>) -> (PathBuf, JoinHandle<Vec<String>>) {
         // Keep paths short: sun_path caps out around 104 bytes, and
         // $TMPDIR-based tempdirs can blow past that.
@@ -316,28 +329,55 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).expect("bind fake server socket");
         let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = BufReader::new(stream);
             let mut received = Vec::new();
             let mut responses = responses.into_iter();
             loop {
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    break;
+                    // A connection dropped without a request (startup probe).
+                    continue;
                 }
                 received.push(line.trim_end().to_string());
-                match responses.next() {
-                    Some(response) => {
-                        let stream = reader.get_mut();
-                        stream.write_all(response.as_bytes()).unwrap();
-                        stream.write_all(b"\n").unwrap();
-                    }
-                    None => break,
+                let Some(response) = responses.next() else {
+                    break; // hang up without answering -> client sees EOF
+                };
+                let stream = reader.get_mut();
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+                if responses.len() == 0 {
+                    break;
                 }
             }
             received
         });
         (path, handle)
+    }
+
+    #[test]
+    fn sequential_calls_work_across_reconnects() {
+        // herdr answers exactly one request per connection, so the client
+        // must reconnect for every call. This is the regression test for
+        // the "workspace.list works, tab.list gets EPIPE" failure seen
+        // against a live herdr.
+        let (path, server) = spawn_fake_server(vec![
+            r#"{"id":"1","result":{"type":"workspace_list","workspaces":[]}}"#.to_string(),
+            r#"{"id":"2","result":{"type":"tab_list","tabs":[]}}"#.to_string(),
+        ]);
+
+        let mut client = SocketClient::connect(&path).unwrap();
+        assert!(client.list_workspaces().unwrap().is_empty());
+        assert!(client.list_tabs().unwrap().is_empty());
+
+        let received = server.join().unwrap();
+        assert_eq!(received.len(), 2);
+        let first: Value = serde_json::from_str(&received[0]).unwrap();
+        let second: Value = serde_json::from_str(&received[1]).unwrap();
+        assert_eq!(first["method"], "workspace.list");
+        assert_eq!(second["method"], "tab.list");
     }
 
     #[test]

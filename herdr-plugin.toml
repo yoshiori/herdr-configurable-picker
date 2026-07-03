@@ -22,4 +22,6 @@ command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plu
 id = "picker"
 title = "Goto"
 placement = "overlay"
-command = ["target/release/herdr-configurable-picker"]
+# The ./ prefix matters: herdr's pty layer resolves bare relative paths via
+# PATH lookup and only ./-prefixed ones against the plugin root cwd.
+command = ["./target/release/herdr-configurable-picker"]

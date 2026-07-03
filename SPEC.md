@@ -52,7 +52,9 @@ command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plu
 id = "picker"
 title = "Goto"
 placement = "overlay"
-command = ["target/release/herdr-configurable-picker"]
+# ./ prefix required: bare relative paths go through PATH lookup, only
+# ./-prefixed ones resolve against the plugin root (portable-pty semantics).
+command = ["./target/release/herdr-configurable-picker"]
 ```
 
 **The `open` action** exists because herdr keybindings cannot open plugin panes directly (see "User keybinding" below). Action argv is exec'd raw with no env-var expansion (`plugin_command.rs`), hence the `sh -c` wrapper; the `${HERDR_BIN_PATH:-herdr}` default falls back to a `PATH` lookup if the recorded binary path ever goes stale (e.g. hot-swapped server binary).
@@ -189,7 +191,7 @@ Wire protocol: one request line, one response line.
 <- {"id":"1","error":{"code":"tab_not_found","message":"..."}}
 ```
 
-`params` must always be present (herdr's Method enum is serde tag/content). Methods used: `workspace.list`, `tab.list`, `workspace.focus`, `tab.focus` (M1); `pane.list`, `pane.focus` (M2). IDs are strings: `w1`, `w1:t1`, `w1:p1`. Unknown response fields are ignored (serde default), so herdr adding fields is not a breaking change; the result `type` tag is checked before deserializing so drift fails with a clear error.
+`params` must always be present (herdr's Method enum is serde tag/content). **One request per connection**: herdr's server answers a single request and hangs up (only `events.subscribe` / `pane.wait_for_output` stream), so the client dials a fresh connection per call. Methods used: `workspace.list`, `tab.list`, `workspace.focus`, `tab.focus` (M1); `pane.list`, `pane.focus` (M2). IDs are strings: `w1`, `w1:t1`, `w1:p1`. Unknown response fields are ignored (serde default), so herdr adding fields is not a breaking change; the result `type` tag is checked before deserializing so drift fails with a clear error.
 
 Merged in memory into:
 
