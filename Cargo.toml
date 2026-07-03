@@ -1,0 +1,17 @@
+[package]
+name = "herdr-configurable-picker"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Tree-based goto picker for herdr with fully configurable keybindings"
+license = "MIT"
+repository = "https://github.com/yoshiori/herdr-configurable-picker"
+readme = "README.md"
+
+[[bin]]
+name = "herdr-configurable-picker"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+strip = true

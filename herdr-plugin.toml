@@ -1,0 +1,15 @@
+id = "yoshiori.herdr-configurable-picker"
+name = "herdr-configurable-picker"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Tree-based goto picker with fully configurable keybindings"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[panes]]
+id = "picker"
+title = "Goto"
+placement = "overlay"
+command = ["target/release/herdr-configurable-picker"]
