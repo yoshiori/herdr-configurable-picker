@@ -2,6 +2,7 @@
 // Actual TUI implementation is tracked in SPEC.md.
 
 mod config;
+mod herdr_client;
 mod keymap;
 
 fn main() {
