@@ -65,6 +65,8 @@ pub struct Row {
     pub focus_target: FocusTarget,
     /// Key/value pairs for the detail panel, in display order.
     pub detail: Vec<(&'static str, String)>,
+    /// Pane rows: working directory, for the optional show_cwd column.
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug)]
@@ -282,6 +284,7 @@ impl Tree {
                     ("panes", ws_pane_count.to_string()),
                     ("status", ws_status.name().to_string()),
                 ],
+                cwd: None,
             });
             for (tab_idx, (tab, (tab_shown, pane_shown))) in
                 ws.tabs.iter().zip(&tab_states).enumerate()
@@ -316,6 +319,7 @@ impl Tree {
                         ("panes", tab.info.pane_count.to_string()),
                         ("status", tab.info.agent_status.name().to_string()),
                     ],
+                    cwd: None,
                 });
                 for (pane_idx, pane) in tab.panes.iter().enumerate() {
                     if !pane_shown[pane_idx] {
@@ -360,6 +364,7 @@ impl Tree {
                         is_current: current == Some(pane_path),
                         focus_target: FocusTarget::Pane(pane.info.pane_id.clone()),
                         detail,
+                        cwd: pane.info.cwd.clone(),
                     });
                 }
             }

@@ -4,6 +4,7 @@
 mod app;
 mod config;
 mod herdr_client;
+mod icons;
 mod keymap;
 mod search;
 mod tree;
@@ -70,6 +71,11 @@ fn main() -> ExitCode {
             ));
             EnterOnBranch::Jump
         });
+    // NO_COLOR per https://no-color.org: present and non-empty disables color.
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+    let (view, mut view_warnings) =
+        ui::ViewOptions::from_config(&config.display, no_color, std::env::var("HOME").ok());
+    warnings.append(&mut view_warnings);
     report_warnings(&warnings);
 
     let mut client = match SocketClient::connect(Path::new(&socket_path)) {
@@ -98,7 +104,7 @@ fn main() -> ExitCode {
 
     let mut terminal = ratatui::init();
     let selection = loop {
-        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app, &hints)) {
+        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app, &hints, &view)) {
             ratatui::restore();
             return fail_visibly(&format!("failed to draw: {e}"));
         }

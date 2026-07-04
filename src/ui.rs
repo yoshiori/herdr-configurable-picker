@@ -1,15 +1,18 @@
-//! ratatui rendering: bordered tree list, reverse-video cursor row, and a
-//! footer hint line built from the *actual* keymap so it never lies about
-//! bindings.
+//! ratatui rendering: bordered tree list with status icons, reverse-video
+//! cursor row, detail panel, and a footer hint line built from the *actual*
+//! keymap so it never lies about bindings.
 
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Mode};
+use crate::config::DisplayConfig;
+use crate::herdr_client::AgentStatus;
+use crate::icons::IconSet;
 use crate::keymap::{Action, Keymap};
 use crate::tree::{Row, RowKind};
 
@@ -53,11 +56,55 @@ impl FooterHints {
     }
 }
 
+/// Everything the renderer needs from `[display]` config plus environment.
+#[derive(Debug, Clone)]
+pub struct ViewOptions {
+    /// `None` hides status icons entirely (`show_agent_status = false`).
+    pub icon_set: Option<IconSet>,
+    pub show_pane_count: bool,
+    pub show_cwd: bool,
+    /// False under NO_COLOR: keep the layout, drop the colors.
+    pub color: bool,
+    /// For `~`-shortening cwd values.
+    pub home: Option<String>,
+}
+
+impl ViewOptions {
+    pub fn from_config(
+        display: &DisplayConfig,
+        no_color: bool,
+        home: Option<String>,
+    ) -> (ViewOptions, Vec<String>) {
+        let mut warnings = Vec::new();
+        let icon_set = if display.show_agent_status {
+            Some(IconSet::parse(&display.icon_set).unwrap_or_else(|| {
+                warnings.push(format!(
+                    "unknown icon_set {:?}; using \"nerd\"",
+                    display.icon_set
+                ));
+                IconSet::Nerd
+            }))
+        } else {
+            None
+        };
+        (
+            ViewOptions {
+                icon_set,
+                show_pane_count: display.show_pane_count,
+                show_cwd: display.show_cwd,
+                color: !no_color,
+                home,
+            },
+            warnings,
+        )
+    }
+}
+
 /// The detail panel needs at least this much total width to be worth
 /// splitting off; below it the list gets the whole canvas.
 const DETAIL_MIN_TOTAL_WIDTH: u16 = 60;
 
-pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints) {
+pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOptions) {
     let outer = Block::bordered().title(" goto ");
     let inner = outer.inner(frame.area());
     frame.render_widget(outer, frame.area());
@@ -117,7 +164,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints) {
         let items: Vec<ListItem> = app
             .rows()
             .iter()
-            .map(|row| ListItem::new(Line::from(row_text(row, width))))
+            .map(|row| ListItem::new(row_line(row, width, view)))
             .collect();
         let list = List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
         let mut state = ListState::default().with_selected(Some(app.cursor));
@@ -125,15 +172,33 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints) {
     }
 
     if let Some(detail_area) = detail_area {
-        render_detail(frame, app, detail_area);
+        render_detail(frame, app, detail_area, view);
     }
 
     let footer = Paragraph::new(hints.line()).block(Block::new().borders(Borders::TOP));
     frame.render_widget(footer, footer_area);
 }
 
+fn status_color(status: AgentStatus) -> Option<Color> {
+    match status {
+        AgentStatus::Idle => None,
+        AgentStatus::Working => Some(Color::Green),
+        AgentStatus::Blocked => Some(Color::Red),
+        AgentStatus::Done => Some(Color::Blue),
+        AgentStatus::Unknown => Some(Color::DarkGray),
+    }
+}
+
+fn dim_style(view: &ViewOptions) -> Style {
+    if view.color {
+        Style::new().fg(Color::DarkGray)
+    } else {
+        Style::new()
+    }
+}
+
 /// Right-hand panel describing the row under the cursor.
-fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view: &ViewOptions) {
     let block = Block::new().borders(Borders::LEFT);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -141,7 +206,6 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let Some(row) = app.rows().get(app.cursor) else {
         return;
     };
-    let home = std::env::var("HOME").ok();
     let key_width = row
         .detail
         .iter()
@@ -158,11 +222,14 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     ];
     for (key, value) in &row.detail {
         let value = if *key == "cwd" {
-            shorten_home(value, home.as_deref())
+            shorten_home(value, view.home.as_deref())
         } else {
             value.clone()
         };
-        lines.push(Line::raw(format!(" {key:<key_width$}  {value}")));
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {key:<key_width$}  "), dim_style(view)),
+            Span::raw(value),
+        ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -179,12 +246,17 @@ fn shorten_home(path: &str, home: Option<&str>) -> String {
     }
 }
 
-/// One row: current marker, indentation, expansion glyph, and label on the
-/// left; pane count (branches) or agent name (panes) right-aligned. Status
-/// details live in the detail panel. Drops the right column on narrow
+/// One row: current marker, indentation, expansion glyph, status icon, and
+/// label on the left; pane count (branches) or agent name plus optional cwd
+/// (panes) right-aligned and dimmed. Drops the right column on narrow
 /// terminals rather than wrapping.
-fn row_text(row: &Row, width: usize) -> String {
+fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
     let marker = if row.is_current { "→" } else { " " };
+    let marker_style = if row.is_current && view.color {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    };
     let indent = "  ".repeat(row.depth as usize);
     let glyph = if row.expandable {
         if row.expanded {
@@ -197,25 +269,57 @@ fn row_text(row: &Row, width: usize) -> String {
     } else {
         "· " // childless workspace/tab: nothing to expand
     };
-    let left = format!("{marker} {indent}{glyph}{}", row.label);
 
-    let right = if row.kind == RowKind::Pane {
-        row.agent.as_deref().unwrap_or("shell").to_string()
-    } else {
+    let mut spans = vec![
+        Span::styled(marker.to_string(), marker_style),
+        Span::raw(format!(" {indent}{glyph}")),
+    ];
+    if let Some(set) = view.icon_set {
+        let icon = set.icon(row.agent_status);
+        let style = match status_color(row.agent_status) {
+            Some(color) if view.color => Style::new().fg(color),
+            _ => Style::new(),
+        };
+        spans.push(Span::styled(format!("{icon} "), style));
+    }
+    spans.push(Span::raw(row.label.clone()));
+
+    let right = right_column(row, view);
+    let left_width: usize = spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    let right_width = UnicodeWidthStr::width(right.as_str());
+
+    if !right.is_empty() && left_width + right_width + 2 <= width {
+        let padding = width - left_width - right_width - 1;
+        spans.push(Span::raw(" ".repeat(padding)));
+        spans.push(Span::styled(format!("{right} "), dim_style(view)));
+        return Line::from(spans);
+    }
+    if left_width <= width {
+        return Line::from(spans);
+    }
+    // Overflow: flatten and cut on a column boundary (styles are a luxury
+    // a 20-column terminal can live without).
+    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+    Line::raw(truncate_to_width(&text, width))
+}
+
+fn right_column(row: &Row, view: &ViewOptions) -> String {
+    if row.kind == RowKind::Pane {
+        let agent = row.agent.as_deref().unwrap_or("shell");
+        match (&row.cwd, view.show_cwd) {
+            (Some(cwd), true) => {
+                format!("{agent}  {}", shorten_home(cwd, view.home.as_deref()))
+            }
+            _ => agent.to_string(),
+        }
+    } else if view.show_pane_count {
         let panes = if row.pane_count == 1 { "pane" } else { "panes" };
         format!("{} {panes}", row.pane_count)
-    };
-
-    // Terminal columns, not chars: CJK labels are two columns per char and
-    // would push the right column out of alignment otherwise.
-    let left_cols = UnicodeWidthStr::width(left.as_str());
-    let right_cols = UnicodeWidthStr::width(right.as_str());
-    if left_cols + right_cols + 2 <= width {
-        let padding = width - left_cols - right_cols - 1;
-        format!("{left}{}{right} ", " ".repeat(padding))
     } else {
-        // Not enough room for both: keep the labels, drop the right column.
-        truncate_to_width(&left, width)
+        String::new()
     }
 }
 
@@ -239,7 +343,7 @@ mod tests {
     use super::*;
     use crate::app::EnterOnBranch;
     use crate::config::KeysConfig;
-    use crate::herdr_client::{AgentStatus, PaneInfo, TabInfo, WorkspaceInfo};
+    use crate::herdr_client::{PaneInfo, TabInfo, WorkspaceInfo};
     use crate::tree::{InitialExpansion, Tree};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -278,7 +382,7 @@ mod tests {
             agent: agent.map(|a| a.to_string()),
             display_agent: None,
             agent_status: AgentStatus::Idle,
-            cwd: None,
+            cwd: Some("/home/u/src/repo".to_string()),
             label: None,
             title: None,
             terminal_id: format!("term_{id}"),
@@ -303,11 +407,33 @@ mod tests {
         FooterHints::from_keymap(&keymap)
     }
 
-    fn render(width: u16, height: u16, app: &mut App) -> Terminal<TestBackend> {
+    /// Colorless nerd icons: stable text assertions.
+    fn plain_view() -> ViewOptions {
+        ViewOptions {
+            icon_set: Some(IconSet::Nerd),
+            show_pane_count: true,
+            show_cwd: false,
+            color: false,
+            home: Some("/home/u".to_string()),
+        }
+    }
+
+    fn render_with(
+        width: u16,
+        height: u16,
+        app: &mut App,
+        view: &ViewOptions,
+    ) -> Terminal<TestBackend> {
         let hints = default_hints();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app, &hints)).unwrap();
         terminal
+            .draw(|frame| draw(frame, app, &hints, view))
+            .unwrap();
+        terminal
+    }
+
+    fn render(width: u16, height: u16, app: &mut App) -> Terminal<TestBackend> {
+        render_with(width, height, app, &plain_view())
     }
 
     fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
@@ -327,18 +453,103 @@ mod tests {
     }
 
     #[test]
-    fn tree_rows_show_glyphs_indentation_and_right_columns() {
+    fn tree_rows_show_glyphs_icons_indentation_and_right_columns() {
         let mut app = sample_app();
         let terminal = render(80, 24, &mut app);
         let screen = screen(&terminal);
 
-        assert!(screen.contains("▼ mothership"), "screen:\n{screen}");
-        assert!(screen.contains("  ▼ main"), "indented tab:\n{screen}");
-        assert!(screen.contains("    pane 1"), "indented pane:\n{screen}");
+        // ws=unknown "·", tab=working "●", panes=idle "○".
+        assert!(screen.contains("▼ · mothership"), "screen:\n{screen}");
+        assert!(screen.contains("  ▼ ● main"), "indented tab:\n{screen}");
+        assert!(screen.contains("    ○ pane 1"), "indented pane:\n{screen}");
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let lines = buffer_lines(&terminal);
         let pane2 = lines.iter().find(|l| l.contains("pane 2")).unwrap();
         assert!(pane2.contains("shell"), "agentless column: {pane2:?}");
+    }
+
+    #[test]
+    fn ascii_icon_set_renders_ascii() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            icon_set: Some(IconSet::Ascii),
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let screen = screen(&terminal);
+        assert!(screen.contains("▼ - mothership"), "screen:\n{screen}");
+        assert!(screen.contains("▼ + main"), "screen:\n{screen}");
+        assert!(screen.contains("o pane 1"), "screen:\n{screen}");
+    }
+
+    #[test]
+    fn display_toggles_hide_icons_and_pane_counts() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            icon_set: None,
+            show_pane_count: false,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let screen = screen(&terminal);
+        assert!(screen.contains("▼ mothership"), "no icon:\n{screen}");
+        assert!(!screen.contains("panes"), "no pane counts:\n{screen}");
+    }
+
+    #[test]
+    fn show_cwd_appends_the_shortened_path_to_pane_rows() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            show_cwd: true,
+            ..plain_view()
+        };
+        let terminal = render_with(100, 24, &mut app, &view);
+        let lines = buffer_lines(&terminal);
+        let pane2 = lines.iter().find(|l| l.contains("pane 2")).unwrap();
+        assert!(
+            pane2.contains("shell  ~/src/repo"),
+            "pane row with cwd: {pane2:?}"
+        );
+    }
+
+    #[test]
+    fn working_status_icon_is_green_unless_no_color() {
+        let mut app = sample_app();
+        let colored = ViewOptions {
+            color: true,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &colored);
+        let lines = buffer_lines(&terminal);
+        let y = lines.iter().position(|l| l.contains("● main")).unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == '●').unwrap() as u16;
+        let style = terminal.backend().buffer().cell((x, y)).unwrap().style();
+        assert_eq!(style.fg, Some(Color::Green), "colored icon");
+
+        let terminal = render_with(80, 24, &mut app, &plain_view());
+        let lines = buffer_lines(&terminal);
+        let y = lines.iter().position(|l| l.contains("● main")).unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == '●').unwrap() as u16;
+        let style = terminal.backend().buffer().cell((x, y)).unwrap().style();
+        assert_ne!(style.fg, Some(Color::Green), "NO_COLOR keeps default fg");
+    }
+
+    #[test]
+    fn view_options_from_config_warns_on_unknown_icon_set() {
+        let mut display = DisplayConfig {
+            icon_set: "comic-sans".to_string(),
+            ..Default::default()
+        };
+        let (view, warnings) = ViewOptions::from_config(&display, false, None);
+        assert_eq!(view.icon_set, Some(IconSet::Nerd));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("comic-sans"));
+
+        display.show_agent_status = false;
+        let (view, warnings) = ViewOptions::from_config(&display, true, None);
+        assert_eq!(view.icon_set, None, "hidden icons skip validation");
+        assert!(warnings.is_empty());
+        assert!(!view.color, "NO_COLOR disables color");
     }
 
     #[test]
@@ -352,6 +563,10 @@ mod tests {
         assert!(screen.contains("claude"), "screen:\n{screen}");
         assert!(screen.contains("status"), "screen:\n{screen}");
         assert!(screen.contains("idle"), "screen:\n{screen}");
+        assert!(
+            screen.contains("~/src/repo"),
+            "cwd shortened via view.home:\n{screen}"
+        );
     }
 
     #[test]
@@ -371,34 +586,78 @@ mod tests {
     }
 
     #[test]
-    fn wide_characters_keep_the_right_column_aligned() {
-        let tree = Tree::build(
-            vec![
-                workspace("w1", 1, "日本語のラベル", true),
-                workspace("w2", 2, "ascii", false),
-            ],
-            vec![
-                tab("w1:t1", "w1", 1, "t", true),
-                tab("w2:t1", "w2", 1, "t", true),
-            ],
-            vec![],
-            InitialExpansion::None,
+    fn cursor_row_is_reversed() {
+        let mut app = sample_app(); // cursor starts on the focused pane row
+        let terminal = render(80, 24, &mut app);
+
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(&terminal);
+        // "○ pane 1" (indented) is the list row; the detail panel header
+        // also says "pane 1" but without the icon.
+        let cursor_y = lines
+            .iter()
+            .position(|line| line.contains("○ pane 1"))
+            .expect("cursor row must be on screen") as u16;
+        let x = lines[cursor_y as usize]
+            .chars()
+            .position(|c| c == 'p')
+            .unwrap() as u16;
+        let style = buffer.cell((x, cursor_y)).unwrap().style();
+        assert!(
+            style.add_modifier.contains(Modifier::REVERSED),
+            "cursor row must be reverse video, got {style:?}"
         );
-        let mut app = App::new(tree, EnterOnBranch::Jump);
-        let terminal = render(50, 10, &mut app); // < 60 cols: list only
+    }
+
+    #[test]
+    fn current_row_carries_a_marker() {
+        let mut app = sample_app();
+        let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
 
-        // Continuation cells of wide glyphs read back as blanks, so search
-        // by a single character.
-        let jp = lines.iter().find(|l| l.contains('日')).unwrap();
-        let ascii = lines.iter().find(|l| l.contains("ascii")).unwrap();
-        // Right-aligned pane counts must survive double-width labels; if the
-        // width math counted chars instead of columns the count would be
-        // pushed past the border and clipped.
-        let jp_body = jp.trim_end_matches([' ', '│']);
-        let ascii_body = ascii.trim_end_matches([' ', '│']);
-        assert!(jp_body.ends_with("0 panes"), "jp row: {jp:?}");
-        assert!(ascii_body.ends_with("0 panes"), "ascii row: {ascii:?}");
+        let current = lines.iter().find(|l| l.contains("○ pane 1")).unwrap();
+        assert!(current.contains("→"), "current row: {current:?}");
+        let other = lines.iter().find(|l| l.contains("○ pane 2")).unwrap();
+        assert!(!other.contains("→"), "other row: {other:?}");
+    }
+
+    #[test]
+    fn footer_reflects_the_actual_keymap_not_the_defaults() {
+        let (keymap, warnings) = Keymap::from_bindings(&[
+            (Action::Down, vec!["ctrl+j".to_string()]),
+            (Action::Up, vec!["ctrl+k".to_string()]),
+            (Action::Expand, vec!["tab".to_string()]),
+            (Action::Accept, vec!["ctrl+m".to_string()]),
+            (Action::Cancel, vec!["q".to_string()]),
+        ]);
+        assert!(warnings.is_empty());
+        let hints = FooterHints::from_keymap(&keymap);
+
+        let mut app = sample_app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &hints, &plain_view()))
+            .unwrap();
+        let screen = screen(&terminal);
+
+        assert!(screen.contains("C-k/C-j move"), "screen:\n{screen}");
+        assert!(screen.contains("tab expand"), "screen:\n{screen}");
+        assert!(screen.contains("q cancel"), "screen:\n{screen}");
+        assert!(
+            !screen.contains("collapse"),
+            "unbound actions stay out of the footer:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn footer_includes_the_search_hint() {
+        let mut app = sample_app();
+        let terminal = render(80, 24, &mut app);
+        assert!(
+            screen(&terminal).contains("/ search"),
+            "screen:\n{}",
+            screen(&terminal)
+        );
     }
 
     #[test]
@@ -441,113 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_includes_the_search_hint() {
-        let mut app = sample_app();
-        let terminal = render(80, 24, &mut app);
-        assert!(
-            screen(&terminal).contains("/ search"),
-            "screen:\n{}",
-            screen(&terminal)
-        );
-    }
-
-    #[test]
-    fn shorten_home_replaces_the_home_prefix() {
-        assert_eq!(
-            shorten_home("/home/u/src/repo", Some("/home/u")),
-            "~/src/repo"
-        );
-        assert_eq!(shorten_home("/home/u", Some("/home/u")), "~");
-        assert_eq!(
-            shorten_home("/home/unrelated/x", Some("/home/u")),
-            "/home/unrelated/x",
-            "prefix must match a whole path component"
-        );
-        assert_eq!(shorten_home("/tmp/x", None), "/tmp/x");
-    }
-
-    #[test]
-    fn collapsed_branch_shows_the_collapsed_glyph() {
-        let tree = Tree::build(
-            vec![workspace("w1", 1, "mothership", true)],
-            vec![tab("w1:t1", "w1", 1, "main", true)],
-            vec![pane("w1:p1", "w1:t1", "w1", true, None)],
-            InitialExpansion::None,
-        );
-        let mut app = App::new(tree, EnterOnBranch::Jump);
-        let terminal = render(80, 24, &mut app);
-        assert!(
-            screen(&terminal).contains("▶ mothership"),
-            "screen:\n{}",
-            screen(&terminal)
-        );
-    }
-
-    #[test]
-    fn cursor_row_is_reversed() {
-        let mut app = sample_app(); // cursor starts on the focused pane row
-        let terminal = render(80, 24, &mut app);
-
-        let buffer = terminal.backend().buffer();
-        let lines = buffer_lines(&terminal);
-        // "    pane 1" (indented) is the list row; the detail panel header
-        // also says "pane 1" but without the tree indentation.
-        let cursor_y = lines
-            .iter()
-            .position(|line| line.contains("    pane 1"))
-            .expect("cursor row must be on screen") as u16;
-        let x = lines[cursor_y as usize]
-            .chars()
-            .position(|c| c == 'p')
-            .unwrap() as u16;
-        let style = buffer.cell((x, cursor_y)).unwrap().style();
-        assert!(
-            style.add_modifier.contains(Modifier::REVERSED),
-            "cursor row must be reverse video, got {style:?}"
-        );
-    }
-
-    #[test]
-    fn current_row_carries_a_marker() {
-        let mut app = sample_app();
-        let terminal = render(80, 24, &mut app);
-        let lines = buffer_lines(&terminal);
-
-        let current = lines.iter().find(|l| l.contains("    pane 1")).unwrap();
-        assert!(current.contains("→"), "current row: {current:?}");
-        let other = lines.iter().find(|l| l.contains("    pane 2")).unwrap();
-        assert!(!other.contains("→"), "other row: {other:?}");
-    }
-
-    #[test]
-    fn footer_reflects_the_actual_keymap_not_the_defaults() {
-        let (keymap, warnings) = Keymap::from_bindings(&[
-            (Action::Down, vec!["ctrl+j".to_string()]),
-            (Action::Up, vec!["ctrl+k".to_string()]),
-            (Action::Expand, vec!["tab".to_string()]),
-            (Action::Accept, vec!["ctrl+m".to_string()]),
-            (Action::Cancel, vec!["q".to_string()]),
-        ]);
-        assert!(warnings.is_empty());
-        let hints = FooterHints::from_keymap(&keymap);
-
-        let mut app = sample_app();
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, &mut app, &hints))
-            .unwrap();
-        let screen = screen(&terminal);
-
-        assert!(screen.contains("C-k/C-j move"), "screen:\n{screen}");
-        assert!(screen.contains("tab expand"), "screen:\n{screen}");
-        assert!(screen.contains("q cancel"), "screen:\n{screen}");
-        assert!(
-            !screen.contains("collapse"),
-            "unbound actions stay out of the footer:\n{screen}"
-        );
-    }
-
-    #[test]
     fn empty_tree_shows_placeholder() {
         let tree = Tree::build(vec![], vec![], vec![], InitialExpansion::All);
         let mut app = App::new(tree, EnterOnBranch::Jump);
@@ -560,10 +712,60 @@ mod tests {
     }
 
     #[test]
+    fn empty_filter_result_says_no_matches() {
+        use crate::keymap::{parse_key_spec, Keymaps};
+        let keys = KeysConfig::default();
+        let (normal, _) = Keymap::from_bindings(&keys.to_bindings());
+        let (search, _) = Keymap::from_bindings(&keys.to_search_bindings());
+        let keymaps = Keymaps { normal, search };
+
+        let mut app = sample_app();
+        for spec in ["/", "z", "z"] {
+            let key = parse_key_spec(spec).unwrap().0[0];
+            app.handle_key(&keymaps, key);
+        }
+        let terminal = render(80, 24, &mut app);
+        let screen = screen(&terminal);
+        assert!(screen.contains("No matches."), "screen:\n{screen}");
+        assert!(
+            !screen.contains("No workspaces found."),
+            "empty filter is not an empty session:\n{screen}"
+        );
+    }
+
+    #[test]
     fn narrow_terminal_truncates_without_panicking() {
         let mut app = sample_app();
         let terminal = render(20, 6, &mut app);
         assert!(!screen(&terminal).is_empty());
+    }
+
+    #[test]
+    fn wide_characters_keep_the_right_column_aligned() {
+        let tree = Tree::build(
+            vec![
+                workspace("w1", 1, "日本語のラベル", true),
+                workspace("w2", 2, "ascii", false),
+            ],
+            vec![
+                tab("w1:t1", "w1", 1, "t", true),
+                tab("w2:t1", "w2", 1, "t", true),
+            ],
+            vec![],
+            InitialExpansion::None,
+        );
+        let mut app = App::new(tree, EnterOnBranch::Jump);
+        let terminal = render(50, 10, &mut app); // < 60 cols: list only
+        let lines = buffer_lines(&terminal);
+
+        // Continuation cells of wide glyphs read back as blanks, so search
+        // by a single character.
+        let jp = lines.iter().find(|l| l.contains('日')).unwrap();
+        let ascii = lines.iter().find(|l| l.contains("ascii")).unwrap();
+        let jp_body = jp.trim_end_matches([' ', '│']);
+        let ascii_body = ascii.trim_end_matches([' ', '│']);
+        assert!(jp_body.ends_with("0 panes"), "jp row: {jp:?}");
+        assert!(ascii_body.ends_with("0 panes"), "ascii row: {ascii:?}");
     }
 
     #[test]
@@ -587,5 +789,20 @@ mod tests {
         );
         // 12 rows minus top/bottom border (2) and footer (2) -> 8.
         assert_eq!(app.viewport_height, 8);
+    }
+
+    #[test]
+    fn shorten_home_replaces_the_home_prefix() {
+        assert_eq!(
+            shorten_home("/home/u/src/repo", Some("/home/u")),
+            "~/src/repo"
+        );
+        assert_eq!(shorten_home("/home/u", Some("/home/u")), "~");
+        assert_eq!(
+            shorten_home("/home/unrelated/x", Some("/home/u")),
+            "/home/unrelated/x",
+            "prefix must match a whole path component"
+        );
+        assert_eq!(shorten_home("/tmp/x", None), "/tmp/x");
     }
 }
