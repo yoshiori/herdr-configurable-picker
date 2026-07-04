@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::keymap::{Action, Keymap};
@@ -170,15 +171,32 @@ fn row_text(row: &Row, width: usize) -> String {
         format!("{} {panes}", row.pane_count)
     };
 
-    let left_cols = left.chars().count();
-    let right_cols = right.chars().count();
+    // Terminal columns, not chars: CJK labels are two columns per char and
+    // would push the right column out of alignment otherwise.
+    let left_cols = UnicodeWidthStr::width(left.as_str());
+    let right_cols = UnicodeWidthStr::width(right.as_str());
     if left_cols + right_cols + 2 <= width {
         let padding = width - left_cols - right_cols - 1;
         format!("{left}{}{right} ", " ".repeat(padding))
     } else {
         // Not enough room for both: keep the labels, drop the right column.
-        left.chars().take(width).collect()
+        truncate_to_width(&left, width)
     }
+}
+
+/// Cuts `text` down to at most `width` terminal columns on a char boundary.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -315,6 +333,37 @@ mod tests {
             screen.contains("mothership"),
             "list still renders:\n{screen}"
         );
+    }
+
+    #[test]
+    fn wide_characters_keep_the_right_column_aligned() {
+        let tree = Tree::build(
+            vec![
+                workspace("w1", 1, "日本語のラベル", true),
+                workspace("w2", 2, "ascii", false),
+            ],
+            vec![
+                tab("w1:t1", "w1", 1, "t", true),
+                tab("w2:t1", "w2", 1, "t", true),
+            ],
+            vec![],
+            InitialExpansion::None,
+        );
+        let mut app = App::new(tree, EnterOnBranch::Jump);
+        let terminal = render(50, 10, &mut app); // < 60 cols: list only
+        let lines = buffer_lines(&terminal);
+
+        // Continuation cells of wide glyphs read back as blanks, so search
+        // by a single character.
+        let jp = lines.iter().find(|l| l.contains('日')).unwrap();
+        let ascii = lines.iter().find(|l| l.contains("ascii")).unwrap();
+        // Right-aligned pane counts must survive double-width labels; if the
+        // width math counted chars instead of columns the count would be
+        // pushed past the border and clipped.
+        let jp_body = jp.trim_end_matches([' ', '│']);
+        let ascii_body = ascii.trim_end_matches([' ', '│']);
+        assert!(jp_body.ends_with("0 panes"), "jp row: {jp:?}");
+        assert!(ascii_body.ends_with("0 panes"), "ascii row: {ascii:?}");
     }
 
     #[test]
