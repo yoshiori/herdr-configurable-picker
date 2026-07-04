@@ -47,12 +47,21 @@ impl FooterHints {
         FooterHints { entries }
     }
 
-    fn line(&self) -> String {
-        self.entries
-            .iter()
-            .map(|(key, action)| format!("{key} {action}"))
-            .collect::<Vec<_>>()
-            .join("   ")
+    /// Keys pop (bold), action words recede (dim): the keys are what the
+    /// eye is hunting for in a hint line.
+    fn line(&self, view: &ViewOptions) -> Line<'static> {
+        let mut spans = Vec::new();
+        for (i, (key, action)) in self.entries.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("   "));
+            }
+            spans.push(Span::styled(
+                key.clone(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(format!(" {action}"), dim_style(view)));
+        }
+        Line::from(spans)
     }
 }
 
@@ -105,7 +114,19 @@ impl ViewOptions {
 const DETAIL_MIN_TOTAL_WIDTH: u16 = 60;
 
 pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOptions) {
-    let outer = Block::bordered().title(" goto ");
+    // Accent-colored frame, like herdr's own modals, so the picker reads as
+    // part of the host rather than a foreign box.
+    let border_style = if view.color {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    };
+    let outer = Block::bordered()
+        .border_style(border_style)
+        .title(Line::styled(
+            " goto ",
+            Style::new().add_modifier(Modifier::BOLD),
+        ));
     let inner = outer.inner(frame.area());
     frame.render_widget(outer, frame.area());
 
@@ -127,18 +148,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
     };
 
     if let Some(search_area) = search_area {
-        // The trailing bar marks the prompt as focused (typing goes here).
-        let prompt = if app.mode == Mode::Search {
-            format!(" / {}▏", app.query)
-        } else {
-            format!(" / {}", app.query)
-        };
-        let style = if app.mode == Mode::Search {
+        // The trailing bar marks the prompt as focused (typing goes here);
+        // the query is the content, the "/" just furniture.
+        let focused = app.mode == Mode::Search;
+        let query_style = if focused {
             Style::new().add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::DIM)
         };
-        frame.render_widget(Paragraph::new(prompt).style(style), search_area);
+        let mut spans = vec![
+            Span::styled(" / ", dim_style(view)),
+            Span::styled(app.query.clone(), query_style),
+        ];
+        if focused {
+            spans.push(Span::raw("▏"));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
     }
 
     let (list_area, detail_area) = if main_area.width >= DETAIL_MIN_TOTAL_WIDTH {
@@ -175,7 +200,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         render_detail(frame, app, detail_area, view);
     }
 
-    let footer = Paragraph::new(hints.line()).block(Block::new().borders(Borders::TOP));
+    let footer = Paragraph::new(hints.line(view)).block(
+        Block::new()
+            .borders(Borders::TOP)
+            .border_style(border_style),
+    );
     frame.render_widget(footer, footer_area);
 }
 
@@ -199,7 +228,14 @@ fn dim_style(view: &ViewOptions) -> Style {
 
 /// Right-hand panel describing the row under the cursor.
 fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view: &ViewOptions) {
-    let block = Block::new().borders(Borders::LEFT);
+    let border_style = if view.color {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    };
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -282,7 +318,13 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
         };
         spans.push(Span::styled(format!("{icon} "), style));
     }
-    spans.push(Span::raw(row.label.clone()));
+    // Bold workspaces anchor the hierarchy visually.
+    let label_style = if row.kind == RowKind::Workspace {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    spans.push(Span::styled(row.label.clone(), label_style));
 
     let right = right_column(row, view);
     let left_width: usize = spans
@@ -789,6 +831,70 @@ mod tests {
         );
         // 12 rows minus top/bottom border (2) and footer (2) -> 8.
         assert_eq!(app.viewport_height, 8);
+    }
+
+    #[test]
+    fn frame_is_accent_colored_and_workspaces_bold() {
+        let mut app = sample_app();
+        let colored = ViewOptions {
+            color: true,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &colored);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer.cell((0, 0)).unwrap().style().fg,
+            Some(Color::Cyan),
+            "border carries the accent color"
+        );
+
+        let lines = buffer_lines(&terminal);
+        let y = lines
+            .iter()
+            .position(|l| l.contains("· mothership"))
+            .unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == 'm').unwrap() as u16;
+        assert!(
+            buffer
+                .cell((x, y))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "workspace labels are bold"
+        );
+
+        // NO_COLOR: no cyan border, structure modifiers stay.
+        let terminal = render_with(80, 24, &mut app, &plain_view());
+        assert_ne!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().style().fg,
+            Some(Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn footer_keys_are_bold_and_labels_dim() {
+        let mut app = sample_app();
+        let terminal = render(80, 24, &mut app);
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(&terminal);
+        let y = lines
+            .iter()
+            .position(|l| l.contains("enter accept"))
+            .unwrap() as u16;
+        // Column index in chars, not bytes: "↑/↓" earlier in the line is
+        // multi-byte.
+        let key_x = lines[y as usize]
+            .split("enter")
+            .next()
+            .unwrap()
+            .chars()
+            .count() as u16;
+        let style = buffer.cell((key_x, y)).unwrap().style();
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "hint keys are bold: {style:?}"
+        );
     }
 
     #[test]
