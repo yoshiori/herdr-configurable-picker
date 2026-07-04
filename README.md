@@ -14,11 +14,12 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 
 ## Status
 
-**v0.1 (M1, MVP): flat tab list with fully configurable keys.** Tree view (M2) and search (M3) are next; see [SPEC.md](./SPEC.md#milestones) for the roadmap and full design.
+**v0.2 (M2): workspace → tab → pane tree with expand/collapse.** Search (M3) is next; see [SPEC.md](./SPEC.md#milestones) for the roadmap and full design.
 
 ## Features
 
-- Flat list of tabs across all workspaces (tree of `workspace → tab → pane` lands in M2).
+- Tree of `workspace → tab → pane` with expand / collapse per branch (`initial_expansion` configurable).
+- Jumps to any node: workspaces, tabs, and panes — including agentless panes, via the socket-only `pane.focus`.
 - No external runtime dependencies (single Rust binary; TUI via [`ratatui`](https://ratatui.rs/)).
 - All keys user-configurable, including chords like `g g`.
 - Talks directly to herdr's API socket — no subprocess per call.
@@ -51,6 +52,9 @@ page_down = ["ctrl+d", "pagedown"]
 page_up   = ["ctrl+u", "pageup"]
 top       = ["home"]
 bottom    = ["end", "shift+g"]
+expand    = ["right", "l"]
+collapse  = ["left", "h"]
+toggle    = ["space"]
 accept    = ["enter"]
 cancel    = ["esc", "ctrl+c", "ctrl+g"]
 ```

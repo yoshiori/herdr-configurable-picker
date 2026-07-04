@@ -249,8 +249,7 @@ herdr-configurable-picker/
     ├── keymap.rs             # key parsing, chord resolution, conflicts
     ├── herdr_client.rs       # socket client + wire structs (HerdrApi trait)
     ├── app.rs                # pure input state machine (keys -> Outcome)
-    ├── model.rs              # flat rows (M1; absorbed into tree.rs in M2)
-    ├── tree.rs               # tree rendering / cursor / expand-collapse (M2)
+    ├── tree.rs               # workspace/tab/pane tree, expansion, visible rows
     ├── search.rs             # substring search + descendant-visibility (M3)
     └── ui.rs                 # ratatui layout, header, footer, colors
 ```
