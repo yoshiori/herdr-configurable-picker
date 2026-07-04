@@ -14,7 +14,22 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 
 ## Status
 
-**v0.3 (M3): tree + search.** Polish (M4: icon sets, colors, CI) is next; see [SPEC.md](./SPEC.md#milestones) for the roadmap and full design.
+**v0.4 (M4): tree + search + polish.** Marketplace publication (M5) is next; see [SPEC.md](./SPEC.md#milestones) for the roadmap and full design.
+
+```
+┌ goto ──────────────────────────────────────────────┬────────────────────────┐
+│  ▼ · mothership                            3 panes │ pane 2                 │
+│    ▶ · 1                                    1 pane │                        │
+│    ▼ ● tab2                                2 panes │ id      w4:p2          │
+│      ● pane 2                               claude │ agent   claude         │
+│      ○ pane 3                                shell │ status  working        │
+│  ▶ ○ herdr                                  1 pane │ cwd     ~/src/mothersh…│
+│→     ○ pane 1                                shell │                        │
+│                                                    │                        │
+├────────────────────────────────────────────────────┴────────────────────────┤
+│ ↑/↓ move   → expand   ← collapse   / search   enter accept   esc cancel     │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
 
 ## Features
 
@@ -22,9 +37,21 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 - `/` search: case-insensitive substring filter that keeps ancestors of matches visible; `ctrl+n`/`ctrl+p`/arrows/`enter` keep working inside the prompt.
 - Jumps to any node: workspaces, tabs, and panes — including agentless panes, via the socket-only `pane.focus`.
 - A detail panel shows the selected node's id, agent, status, and cwd.
+- Status icons in three sets (`nerd` / `ascii` / `emoji`), status colors, `NO_COLOR` support, and `[display]` toggles for icons, pane counts, and cwd.
 - No external runtime dependencies (single Rust binary; TUI via [`ratatui`](https://ratatui.rs/)).
 - All keys user-configurable, including chords like `g g`.
 - Talks directly to herdr's API socket — no subprocess per call.
+
+## vs the built-in goto (`prefix+g`)
+
+| | built-in goto | this plugin |
+| --- | --- | --- |
+| Movement keys | hard-coded (`j`/`k`/arrows; `ctrl+n`/`ctrl+p` only while searching) | fully rebindable, multiple keys per action, chords |
+| Structure | workspace/tab list | workspace → tab → pane tree with expand/collapse |
+| Jump to a pane | via its tab | any pane directly (incl. agentless, via socket `pane.focus`) |
+| Search keys | fixed | rebindable (`search_start`/`search_clear`/`search_exit`) |
+| Rendering | true floating modal | full-canvas pane with a detail panel |
+| Ships with herdr | yes | `herdr plugin install yoshiori/herdr-configurable-picker` |
 
 ## Install
 
