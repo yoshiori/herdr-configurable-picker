@@ -9,7 +9,7 @@ use std::fmt;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-/// Everything the picker can do in normal mode (M1 scope).
+/// Everything the picker can do in normal mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Up,
@@ -18,6 +18,9 @@ pub enum Action {
     PageDown,
     Top,
     Bottom,
+    Expand,
+    Collapse,
+    Toggle,
     Accept,
     Cancel,
 }

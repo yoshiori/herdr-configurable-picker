@@ -67,6 +67,8 @@ impl App {
             Action::PageUp => self.cursor = self.cursor.saturating_sub(page),
             Action::Top => self.cursor = 0,
             Action::Bottom => self.cursor = last,
+            // No-op on the flat list; the tree rewrite gives these meaning.
+            Action::Expand | Action::Collapse | Action::Toggle => {}
             Action::Accept => return Outcome::FocusTab(self.items[self.cursor].tab_id.clone()),
             Action::Cancel => return Outcome::Cancel,
         }
