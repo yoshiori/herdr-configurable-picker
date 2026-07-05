@@ -50,7 +50,7 @@ command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plu
 
 [[panes]]
 id = "picker"
-title = "Goto"
+title = "herdr-configurable-picker"
 placement = "overlay"
 # ./ prefix required: bare relative paths go through PATH lookup, only
 # ./-prefixed ones resolve against the plugin root (portable-pty semantics).
