@@ -1,6 +1,6 @@
 # herdr-configurable-picker — Specification
 
-> Configurable, tree-based goto picker for [herdr](https://herdr.dev). Ships as a herdr plugin. Every key that moves the cursor, expands a node, accepts a choice, or starts a search is user-configurable — unlike the built-in `prefix+g` goto whose keys are hard-coded.
+> Configurable, tree-based goto picker for [herdr](https://herdr.dev). Ships as a herdr plugin. Emacs-style movement and IME-safe keys out of the box, and every key that moves the cursor, expands a node, accepts a choice, or starts a search is user-configurable — unlike the built-in `prefix+g` goto whose keys are hard-coded.
 
 ## Purpose
 
@@ -13,14 +13,13 @@ This plugin provides a **drop-in alternative** bound to a separate key (recommen
 
 1. **No external dependencies** at runtime — one static binary, no `fzf`, no `jq`. TUI rendered by the plugin itself.
 2. **Tree structure** — workspace / tab / pane hierarchy with collapse/expand, matching the built-in goto's information model.
-3. **Fully user-configurable keybindings** — every action (`up` / `down` / `expand` / `collapse` / `accept` / `cancel` / `search` / `clear` / `page_up` / `page_down` / `top` / `bottom`) is bindable in the plugin's own config file.
+3. **Fully user-configurable keybindings** — every action (`up` / `down` / `expand` / `collapse` / `accept` / `cancel` / `search` / `clear` / `page_up` / `page_down` / `top` / `bottom` / the state filters) is bindable in the plugin's own config file, with Emacs-style and IME-safe defaults.
 
 ## Non-goals
 
 - Replacing the built-in goto entirely. The plugin binds to a separate key so both remain available.
 - Duplicating features already covered by herdr core (pane split, workspace rename, agent send, etc.). Only navigation.
 - Cross-instance goto (jumping into panes owned by a different herdr session).
-- Mouse support in v0.1 (may come later).
 
 ## Distribution
 
@@ -34,7 +33,7 @@ This plugin provides a **drop-in alternative** bound to a separate key (recommen
 ```toml
 id = "yoshiori.herdr-configurable-picker"
 name = "herdr-configurable-picker"
-version = "0.1.0"
+version = "1.0.0"
 min_herdr_version = "0.7.0"
 description = "Goto picker with Emacs-style movement, IME-safe keys, and fully configurable bindings"
 platforms = ["linux", "macos"]
@@ -61,7 +60,7 @@ command = ["./target/release/herdr-configurable-picker"]
 
 **`placement = "overlay"`**: matches the built-in goto's UX (centered popup, restores prior focus/zoom on close). `split` would leave a stray pane behind if the user is not careful.
 
-**Windows in v0.1**: excluded from platforms. `ratatui` supports Windows fine, but we defer testing to v0.2.
+**Windows**: excluded from `platforms`. `ratatui` supports Windows fine, but it is untested here; revisit if someone asks.
 
 ## User keybinding (in herdr's config, not this plugin's)
 
@@ -114,6 +113,7 @@ filter_clear   = ["a", "backspace", "ctrl+a"]
 [display]
 show_pane_count   = true
 show_agent_status = true
+show_agent_icon   = true      # 󰚩 in front of agent meta,  for shells
 show_cwd          = false     # off by default; opt in for wide terminals
 
 # Matches the built-in's agent icons (blocked/working/done/idle/unknown):
@@ -133,6 +133,10 @@ initial_expansion = "all"   # "all" | "current_workspace" | "none"
 # "expand" - toggle the subtree; user then moves to a leaf.
 # "jump"   - jump immediately to the branch's active tab/pane.
 enter_on_branch = "jump"
+
+# Hover follows, click jumps, wheel scrolls, caret click toggles.
+# "auto" follows the host's [ui] mouse_capture; booleans override.
+mouse = "auto"
 ```
 
 ### Key syntax
@@ -163,27 +167,52 @@ Mirrors herdr's own binding syntax:
 
 Rendered inside the overlay pane herdr spawns. We do **not** read the outer terminal size — we query our own pty (`TIOCGWINSZ`) and re-layout on `SIGWINCH`.
 
+The plugin draws no frame of its own — herdr's pane chrome (border + the
+manifest pane title) is the frame.
+
 ```
-┌ goto ─────────────────────────────────────────────────────────────────────┐
-│                                                                            │
-│ ▼ ○ picker                                           1 pane   unknown     │
-│   → ○ pane 1                                                  shell        │
-│ ▼ ● picker › tab2                                    2 panes  working     │
-│     ○ pane 2                                                  shell        │
-│     ○ pane 3                                                  shell        │
-│ ▶ ✓ herdr                                            1 pane   idle         │
-│                                                                            │
-├───────────────────────────────────────────────────────────────────────────┤
-│  ↑↓ move   → expand   ← collapse   enter accept   / search   esc cancel   │
-└───────────────────────────────────────────────────────────────────────────┘
+┌ herdr-configurable-picker ────────────────────────────────────────┬────────────────────────┐
+│  ▼ · picker                                               3 panes │ picker/tab2/pane 2     │
+│    ▶ · 1                                                   1 pane │                        │
+│    ▼ ● tab2                                               2 panes │ id      w4:p2          │
+│      ● pane 2                                            󰚩 claude │ agent   󰚩 claude       │
+│      ○ pane 3                                               shell │ status  ⠋ working      │
+│  ▶ ○ herdr                                                 1 pane │ cwd     ~/src/picker   │
+│→     ○ pane 1                                               shell │ branch  main           │
+│                                                                   │                        │
+├───────────────────────────────────────────────────────────────────┴────────────────────────┤
+│ ↑/↓ move   → expand   ← collapse   / search   b/w/i/d/a states   enter accept   esc cancel │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Header shows `/ search: <query>` only when search is active.
-- Cursor row: reverse video.
-- Tree glyphs: `▼` expanded / `▶` collapsed / `→` (or `»`) on the currently selected leaf.
-- Right column: pane count (branch nodes) / agent info (leaf panes).
-- Footer: single-line hint showing **currently bound** movement/accept/cancel keys (reads from user's config so it stays honest).
-- Respects `NO_COLOR`. Color palette can be overridden in `[display]` later.
+- **Header** (always on, like the built-in's): the `/` search prompt (dim
+  placeholder until used) or the active state-filter chip with the state's
+  own icon, plus the total pane count right-aligned; a rule separates it
+  from the tree.
+- **Tree**: workspaces open with `▾`/`▸` and are bold; children hang off
+  tree-command guide rails (`├──`, `└──`, `│` continuations). Single-tab
+  workspaces list their panes directly (the tab level is skipped, like the
+  built-in). `◆` marks where you came from (workspace and pane).
+- **Cursor row**: a solid accent bar (fg + bg overridden); `REVERSED`
+  under `NO_COLOR`.
+- **Right column** (dim): pane counts and activity summaries
+  (`2 working · 1 blocked`) on branches; `{agent icon} {agent} · {status}`
+  on agent panes, `{icon} shell` otherwise; optionally the `~`-shortened
+  cwd (`show_cwd`).
+- **Detail panel** (right third, ≥ 60 total columns): the selected row's
+  ancestor-path header (`ws/tab/pane`), then id / agent (with icon) /
+  status (colored icon + working spinner) / cwd / git branch / title.
+  Branches come from reading `.git/HEAD` locally (walking up from
+  `foreground_cwd`, then `cwd`; linked worktrees and detached HEADs
+  handled) — the API does not carry them.
+- **Scrollbar**: a `▕` column overdrawn on the list's right edge when the
+  rows overflow, dim track with an accent thumb.
+- **Footer**: hint line built from the **currently bound** keys (reads the
+  user's keymap so it never lies).
+- **Mouse** (when enabled): hover moves the cursor, click jumps, wheel
+  scrolls three rows, clicking the prompt focuses search.
+- Respects `NO_COLOR`; the accent follows the herdr theme
+  (`accent = "auto"`) or an explicit color.
 
 ## Data model
 
@@ -196,7 +225,7 @@ Env contract (set by herdr on plugin pane processes):
 | `HERDR_SOCKET_PATH` | API socket. Missing ⇒ not inside herdr ⇒ exit 2 with a hint. |
 | `HERDR_PLUGIN_CONFIG_DIR` | `config.toml` location (seeded on first run). |
 | `HERDR_PLUGIN_STATE_DIR` | `picker.log` for warnings (stderr vanishes with the overlay). |
-| `HERDR_PLUGIN_CONTEXT_JSON` | invocation context; `tab_id` seeds the initial cursor. |
+| `HERDR_PLUGIN_CONTEXT_JSON` | invocation context; `focused_pane_id` (the pane focused *before* the overlay opened) lets the picker drop its own overlay pane from the snapshot and restore the real current pane. |
 
 Wire protocol: one request line, one response line.
 
@@ -214,8 +243,10 @@ Merged in memory into:
 struct Workspace { id, label, number: u32, agent_status, tabs: Vec<Tab> }
 struct Tab       { id, workspace_id, label, number: u32, pane_count: u32,
                    agent_status, focused: bool, panes: Vec<Pane> }
-struct Pane      { id, tab_id, workspace_id, agent: Option<String>,
-                   agent_status, cwd, focused: bool, terminal_id }
+struct Pane      { id, tab_id, workspace_id, agent, display_agent,
+                   agent_status, custom_status, title, cwd, foreground_cwd,
+                   focused: bool, terminal_id,
+                   branch }  // resolved locally from .git/HEAD, not the API
 ```
 
 - **Refresh semantics**: fetched on open and re-fetched about once a second while the picker is open (no event subscription — three cheap list calls per refresh). The built-in recomputes its rows from live state every frame; polling is the snapshot-client equivalent. A refresh preserves the cursor's node, the user's expand/collapse choices, and the active search filter; statuses, labels, and appearing/disappearing panes update in place. A failed refresh keeps the last good snapshot and retries on the next interval.
@@ -243,7 +274,7 @@ herdr answers a request it cannot parse (e.g. an unknown method) with an `invali
      bindings like `ctrl+n`/`ctrl+p`, arrows, and `enter` keep moving,
      accepting, and cancelling without leaving the prompt (chords do not
      fire inside search mode).
-- **Matching**: like the built-in's `text_matches_query` — the query is split on whitespace and every word must appear (case-insensitive) in the node's *search text*, which is the label plus the meta column (`claude · idle`, `2 panes · 1 working`, …). So `/blocked` finds stuck agents and `/moth work` intersects. A node is visible if it or any descendant matches; ancestors of a match stay visible so context is preserved. Children of a matching branch are *not* revealed — jump to the branch itself. Collapse state is ignored while a filter is active; the user's expansion state is untouched and returns when the query clears.
+- **Matching**: like the built-in's `text_matches_query` — the query is split on whitespace and every word must appear (case-insensitive) in the node's *search text*, which is the label plus the meta column (`claude · idle`, `2 panes · 1 working`, …). So `/blocked` finds stuck agents and `/pick work` intersects. A node is visible if it or any descendant matches; ancestors of a match stay visible so context is preserved. Children of a matching branch are *not* revealed — jump to the branch itself. Collapse state is ignored while a filter is active; the user's expansion state is untouched and returns when the query clears.
 - **Match count**: shown at the right edge of the prompt line.
 - **State filters**: `filter_blocked`/`_working`/`_idle`/`_done` (default `b`/`w`/`i`/`d`) show only nodes whose (aggregate) agent state matches, with the same ancestor-reveal rules; `filter_clear` (default `a`) drops the filter. Text search and state filters are mutually exclusive — starting one drops the other, and mode/filter keys keep working even when the current filter matches nothing.
 - Cursor auto-moves to the first visible *match* (not a context-only ancestor) after each keystroke.
@@ -255,7 +286,7 @@ herdr answers a request it cannot parse (e.g. an unknown method) with an `invali
 
 - **Initial cursor**: on the currently focused pane if visible; otherwise the first leaf of the first expanded workspace.
 - **Exit code**: always 0 (both on selection and on cancel). herdr treats non-zero as a toast-worthy error.
-- **Overlay close**: verify the overlay auto-closes on child exit; if not, call `herdr plugin pane close` before returning. See Open Question #3.
+- **Overlay close**: confirmed in herdr source — on child exit (any code) herdr removes the overlay pane and restores the previous focus and zoom. Exiting 0 *is* the close mechanism.
 - **Terminal resize**: `SIGWINCH` → re-layout → redraw.
 - **Empty tree**: display "No workspaces found." and wait for any key.
 
@@ -269,50 +300,63 @@ herdr-configurable-picker/
 ├── README.md
 ├── LICENSE (MIT)
 ├── SPEC.md                   # this document
-├── CHANGELOG.md              # to be added
+├── CHANGELOG.md
+├── assets/                   # README screenshot
+├── tests/
+│   └── manifest_sync.rs      # crate version == manifest version
 └── src/
     ├── main.rs               # entry point, env contract, TUI event loop
     ├── config.rs             # plugin config load + first-run seeding
     ├── keymap.rs             # key parsing, chord resolution, conflicts
     ├── herdr_client.rs       # socket client + wire structs (HerdrApi trait)
-    ├── app.rs                # pure input state machine (keys -> Outcome)
+    ├── host_config.rs        # host config.toml readers (theme accent, mouse)
+    ├── app.rs                # pure input state machine (keys/mouse -> Outcome)
     ├── tree.rs               # workspace/tab/pane tree, expansion, visible rows
-    ├── search.rs             # substring search + descendant-visibility (M3)
-    └── ui.rs                 # ratatui layout, header, footer, colors
+    ├── search.rs             # multi-word AND matching
+    ├── git.rs                # .git/HEAD branch resolution (no subprocess)
+    ├── icons.rs              # status/agent icon sets (nerd/ascii/emoji)
+    └── ui.rs                 # ratatui layout, header, detail panel, footer
 ```
 
-Dependencies (proposed):
+Dependencies:
 - `ratatui` (TUI)
 - `crossterm` (input events; herdr also uses it)
-- `serde` + `serde_json` (parsing herdr CLI JSON output)
+- `serde` + `serde_json` (socket wire structs)
 - `toml` (config file)
 - `anyhow` (error handling)
+- `unicode-width` (column math for eliding)
+- `tempfile` (dev only, git fixture tests)
 
-## Milestones
+## Milestones — all shipped
 
-**M1 — MVP**
+**M1 — MVP** ✅ `v0.1.0` (2026-07-04)
 - Flat tab list (no tree yet), no search.
 - All movement / accept / cancel keys config-driven.
-- `tab focus` on select.
-- Ship as `v0.1.0`.
+- `tab.focus` on select.
 
-**M2 — Tree**
+**M2 — Tree** ✅ `v0.2.0` (2026-07-04)
 - Workspace → tab → pane hierarchy with expand / collapse.
 - `initial_expansion` honored.
-- Agent-aware focus (`agent focus <pane_id>` for agent panes).
+- Direct pane focus — shipped as socket `pane.focus` with a `tab.focus`
+  fallback for herdr ≤ 0.7.1 (not the CLI `agent focus` this originally
+  proposed; the socket method works for agentless panes too).
 
-**M3 — Search**
+**M3 — Search** ✅ `v0.3.0` (2026-07-04)
 - `/` search with descendant-match visibility.
 - Substring matching only.
 
-**M4 — Polish**
+**M4 — Polish** ✅ `v0.4.0` (2026-07-04)
 - Icon sets, colors, `NO_COLOR`.
 - CI (GitHub Actions: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`).
-- README with screenshots and comparison to built-in goto.
+- README with the comparison to the built-in goto.
 
-**M5 — Publish**
-- Add GitHub topic `herdr-plugin` so herdr's marketplace picks it up.
-- Announce (optionally, via herdr Discussions).
+**M5 — Publish** ✅ `v1.0.0` (2026-07-05)
+- Built-in parity work and beyond landed on the way (PR #5–#13: live
+  refresh, meta search, state filters, mouse, detail panel with git
+  branches, agent icons, IME-safe default keys).
+- GitHub topic `herdr-plugin` added; clean `herdr plugin install`
+  verified; announced in herdr Discussions
+  ([#1047](https://github.com/ogulcancelik/herdr/discussions/1047)).
 
 ## Open questions — all resolved (2026-07-03, against herdr source)
 
