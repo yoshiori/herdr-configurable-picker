@@ -313,13 +313,21 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
         };
         spans.push(Span::styled(format!("{icon} "), style));
     }
-    // Bold workspaces anchor the hierarchy visually.
+    // Bold workspaces anchor the hierarchy visually. Like the built-in,
+    // their pane count rides in the label ("mothership (3)"); the display
+    // suffix stays out of Row.label so search and the detail panel see the
+    // clean name.
     let label_style = if row.kind == RowKind::Workspace {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
-    spans.push(Span::styled(row.label.clone(), label_style));
+    let label_text = if row.kind == RowKind::Workspace && view.show_pane_count {
+        format!("{} ({})", row.label, row.pane_count)
+    } else {
+        row.label.clone()
+    };
+    spans.push(Span::styled(label_text, label_style));
 
     let right = right_column(row, view);
     let left_width: usize = spans
@@ -363,10 +371,11 @@ fn right_column(row: &Row, view: &ViewOptions) -> String {
             }
             _ => base,
         }
-    } else if view.show_pane_count {
+    } else if row.kind == RowKind::Tab && view.show_pane_count {
         let panes = if row.pane_count == 1 { "pane" } else { "panes" };
         format!("{} {panes}", row.pane_count)
     } else {
+        // Workspace counts live in the label suffix, like the built-in.
         String::new()
     }
 }
@@ -441,8 +450,10 @@ mod tests {
     fn sample_app() -> App {
         // Two tabs so the tab level actually renders (single-tab
         // workspaces skip it, like the built-in goto).
+        let mut ws = workspace("w1", 1, "mothership", true);
+        ws.pane_count = 3;
         let tree = Tree::build(
-            vec![workspace("w1", 1, "mothership", true)],
+            vec![ws],
             vec![
                 tab("w1:t1", "w1", 1, "main", true),
                 tab("w1:t2", "w1", 2, "logs", false),
@@ -536,10 +547,21 @@ mod tests {
         let screen = screen(&terminal);
 
         // ws=unknown "·", tab=working "●", panes=idle "○".
-        assert!(screen.contains("▼ · mothership"), "screen:\n{screen}");
+        assert!(
+            screen.contains("▼ · mothership (3)"),
+            "workspace pane count rides in the label:\n{screen}"
+        );
         assert!(screen.contains("  ▼ ● main"), "indented tab:\n{screen}");
         assert!(screen.contains("    ○ claude"), "indented pane:\n{screen}");
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
+        let ws_row = buffer_lines(&terminal)
+            .into_iter()
+            .find(|l| l.contains("mothership"))
+            .unwrap();
+        assert!(
+            !ws_row.contains("3 panes"),
+            "no duplicate count in the workspace right column: {ws_row:?}"
+        );
         let lines = buffer_lines(&terminal);
         let agent_row = lines.iter().find(|l| l.contains("○ claude")).unwrap();
         assert!(
@@ -580,6 +602,10 @@ mod tests {
         let screen = screen(&terminal);
         assert!(screen.contains("▼ mothership"), "no icon:\n{screen}");
         assert!(!screen.contains("panes"), "no pane counts:\n{screen}");
+        assert!(
+            !screen.contains("mothership ("),
+            "no label suffix either:\n{screen}"
+        );
     }
 
     #[test]
@@ -829,16 +855,15 @@ mod tests {
     #[test]
     fn wide_characters_keep_the_right_column_aligned() {
         let tree = Tree::build(
+            vec![workspace("w1", 1, "w", true)],
+            // Wide-charactered TAB labels: tab rows carry the "N panes"
+            // right column whose alignment the width math protects.
             vec![
-                workspace("w1", 1, "日本語のラベル", true),
-                workspace("w2", 2, "ascii", false),
-            ],
-            vec![
-                tab("w1:t1", "w1", 1, "t", true),
-                tab("w2:t1", "w2", 1, "t", true),
+                tab("w1:t1", "w1", 1, "日本語のラベル", true),
+                tab("w1:t2", "w1", 2, "ascii", false),
             ],
             vec![],
-            InitialExpansion::None,
+            InitialExpansion::All,
         );
         let mut app = App::new(tree, EnterOnBranch::Jump);
         let terminal = render(50, 10, &mut app); // < 60 cols: list only
@@ -848,10 +873,10 @@ mod tests {
         // by a single character.
         let jp = lines.iter().find(|l| l.contains('日')).unwrap();
         let ascii = lines.iter().find(|l| l.contains("ascii")).unwrap();
-        let jp_body = jp.trim_end_matches([' ', '│']);
-        let ascii_body = ascii.trim_end_matches([' ', '│']);
-        assert!(jp_body.ends_with("0 panes"), "jp row: {jp:?}");
-        assert!(ascii_body.ends_with("0 panes"), "ascii row: {ascii:?}");
+        let jp_body = jp.trim_end_matches(' ');
+        let ascii_body = ascii.trim_end_matches(' ');
+        assert!(jp_body.ends_with("2 panes"), "jp row: {jp:?}");
+        assert!(ascii_body.ends_with("2 panes"), "ascii row: {ascii:?}");
     }
 
     #[test]
