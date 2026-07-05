@@ -3,6 +3,7 @@
 
 mod app;
 mod config;
+mod git;
 mod herdr_client;
 mod host_config;
 mod icons;
@@ -218,6 +219,9 @@ fn fetch_tree(
     let mut tabs = client.list_tabs()?;
     let mut panes = client.list_panes()?;
     tree::drop_own_overlay_pane(&mut workspaces, &mut tabs, &mut panes, context_pane_id);
+    // Branch names never come over the socket; they resolve locally from
+    // each pane's cwd (.git/HEAD).
+    git::annotate(&mut workspaces, &mut panes);
     Ok(Tree::build(workspaces, tabs, panes, initial_expansion))
 }
 

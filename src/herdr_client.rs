@@ -39,6 +39,19 @@ impl AgentStatus {
     }
 }
 
+/// Worktree metadata herdr attaches to workspaces opened through its
+/// worktree flow. Fields are defaulted individually so a leaner payload
+/// from another herdr version cannot fail the whole workspace list.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct WorkspaceWorktree {
+    #[serde(default)]
+    pub repo_name: String,
+    #[serde(default)]
+    pub checkout_path: String,
+    #[serde(default)]
+    pub is_linked_worktree: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkspaceInfo {
     pub workspace_id: String,
@@ -49,6 +62,11 @@ pub struct WorkspaceInfo {
     pub tab_count: usize,
     pub active_tab_id: String,
     pub agent_status: AgentStatus,
+    #[serde(default)]
+    pub worktree: Option<WorkspaceWorktree>,
+    /// Not on the wire: resolved locally from the worktree checkout.
+    #[serde(skip)]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -75,6 +93,10 @@ pub struct PaneInfo {
     pub agent_status: AgentStatus,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Where the foreground process runs (`cd`-ed agents live here, not in
+    /// the shell's `cwd`).
+    #[serde(default)]
+    pub foreground_cwd: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
@@ -83,6 +105,9 @@ pub struct PaneInfo {
     #[serde(default)]
     pub custom_status: Option<String>,
     pub terminal_id: String,
+    /// Not on the wire: resolved locally from the pane's cwd.
+    #[serde(skip)]
+    pub branch: Option<String>,
 }
 
 /// The herdr calls the picker needs. `main` talks to this trait so tests can
@@ -347,7 +372,13 @@ mod tests {
                     "tab_count": 2,
                     "active_tab_id": "w1:t2",
                     "agent_status": "idle",
-                    "worktree": {"repo_key": "x", "repo_name": "y"}
+                    "worktree": {
+                        "repo_key": "x",
+                        "repo_name": "herdr",
+                        "repo_root": "/home/user/src/herdr",
+                        "checkout_path": "/home/user/src/herdr-wt/fix",
+                        "is_linked_worktree": true
+                    }
                 }]
             }"#,
         )
@@ -357,6 +388,38 @@ mod tests {
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].workspace_id, "w1");
         assert_eq!(workspaces[0].active_tab_id, "w1:t2");
+        assert_eq!(
+            workspaces[0].worktree,
+            Some(WorkspaceWorktree {
+                repo_name: "herdr".to_string(),
+                checkout_path: "/home/user/src/herdr-wt/fix".to_string(),
+                is_linked_worktree: true,
+            })
+        );
+        assert_eq!(workspaces[0].branch, None);
+    }
+
+    #[test]
+    fn workspace_without_worktree_parses_to_none() {
+        let result: Value = serde_json::from_str(
+            r#"{
+                "type": "workspace_list",
+                "workspaces": [{
+                    "workspace_id": "w1",
+                    "number": 1,
+                    "label": "scratch",
+                    "focused": false,
+                    "pane_count": 1,
+                    "tab_count": 1,
+                    "active_tab_id": "w1:t1",
+                    "agent_status": "unknown"
+                }]
+            }"#,
+        )
+        .unwrap();
+        let workspaces: Vec<WorkspaceInfo> =
+            extract_payload(&result, "workspace_list", "workspaces").unwrap();
+        assert_eq!(workspaces[0].worktree, None);
     }
 
     #[test]
@@ -390,6 +453,7 @@ mod tests {
                     "display_agent": "Claude",
                     "agent_status": "working",
                     "cwd": "/home/user/repo",
+                    "foreground_cwd": "/home/user/repo/crates/core",
                     "label": "builder",
                     "title": "make -j8",
                     "terminal_id": "term_b",
@@ -402,9 +466,16 @@ mod tests {
         assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].agent, None);
         assert_eq!(panes[0].label, None);
+        assert_eq!(panes[0].foreground_cwd, None);
         assert_eq!(panes[1].agent.as_deref(), Some("claude"));
         assert_eq!(panes[1].agent_status, AgentStatus::Working);
         assert!(panes[1].focused);
+        assert_eq!(
+            panes[1].foreground_cwd.as_deref(),
+            Some("/home/user/repo/crates/core")
+        );
+        // branch never comes off the wire; it is resolved locally later.
+        assert_eq!(panes[1].branch, None);
     }
 
     #[test]

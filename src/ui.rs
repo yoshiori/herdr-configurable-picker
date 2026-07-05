@@ -471,6 +471,25 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view
         Line::raw(""),
     ];
     for (key, value) in &row.detail {
+        let key_span = Span::styled(format!(" {key:<key_width$}  "), dim_style(view));
+        // The status line mirrors the tree rows: the status icon (the
+        // animated spinner while working) and the status color.
+        if *key == "status" {
+            let style = match status_color(row.agent_status) {
+                Some(color) if view.color => Style::new().fg(color),
+                _ => Style::new(),
+            };
+            let mut spans = vec![key_span];
+            let mut budget = value_width;
+            if let Some(set) = &view.icon_set {
+                spans.push(Span::styled(set.icon(row.agent_status, app.tick), style));
+                spans.push(Span::raw(" "));
+                budget = budget.saturating_sub(2).max(1);
+            }
+            spans.push(Span::styled(middle_elide(value, budget), style));
+            lines.push(Line::from(spans));
+            continue;
+        }
         // Long values used to clip at the panel edge mid-path; elide them
         // instead. Paths keep their trailing segments (the part you scan
         // for), everything else keeps head and tail.
@@ -479,10 +498,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view
         } else {
             middle_elide(value, value_width)
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {key:<key_width$}  "), dim_style(view)),
-            Span::raw(value),
-        ]));
+        lines.push(Line::from(vec![key_span, Span::raw(value)]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -712,6 +728,8 @@ mod tests {
             tab_count: 0,
             active_tab_id: String::new(),
             agent_status: AgentStatus::Unknown,
+            worktree: None,
+            branch: None,
         }
     }
 
@@ -737,10 +755,12 @@ mod tests {
             display_agent: None,
             agent_status: AgentStatus::Idle,
             cwd: Some("/home/u/src/repo".to_string()),
+            foreground_cwd: None,
             label: None,
             title: None,
             custom_status: None,
             terminal_id: format!("term_{id}"),
+            branch: None,
         }
     }
 
@@ -983,6 +1003,71 @@ mod tests {
         assert!(
             screen.contains("~/src/repo"),
             "cwd shortened via view.home:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn detail_status_line_carries_the_status_icon() {
+        let mut app = sample_app(); // cursor on the idle claude pane
+        let terminal = render(80, 24, &mut app);
+        let lines = buffer_lines(&terminal);
+
+        let status_line = lines
+            .iter()
+            .find(|l| l.contains("status"))
+            .expect("detail panel status line");
+        assert!(
+            status_line.contains("✓ idle"),
+            "icon next to the status value: {status_line:?}"
+        );
+    }
+
+    #[test]
+    fn detail_status_line_is_painted_in_the_status_color() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            color: true,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let lines = buffer_lines(&terminal);
+        let buffer = terminal.backend().buffer();
+
+        let y = lines.iter().position(|l| l.contains("✓ idle")).unwrap();
+        // Convert the byte offset to a column: every cell symbol on this
+        // row is a single-width char, but tree glyphs are multi-byte.
+        let byte = lines[y].find("✓ idle").unwrap();
+        let x = lines[y][..byte].chars().count();
+        for dx in 0.."✓ idle".chars().count() as u16 {
+            let cell = buffer.cell((x as u16 + dx, y as u16)).unwrap();
+            if cell.symbol().trim().is_empty() {
+                continue;
+            }
+            assert_eq!(
+                cell.style().fg,
+                Some(Color::Green),
+                "idle paints green at +{dx}: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_status_line_stays_plain_without_icons() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            icon_set: None,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let lines = buffer_lines(&terminal);
+
+        let status_line = lines
+            .iter()
+            .find(|l| l.contains("status"))
+            .expect("detail panel status line");
+        assert!(
+            status_line.contains("idle") && !status_line.contains("✓"),
+            "no icon when show_agent_status is off: {status_line:?}"
         );
     }
 

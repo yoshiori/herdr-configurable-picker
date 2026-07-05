@@ -449,6 +449,8 @@ mod tests {
             tab_count: 0,
             active_tab_id: String::new(),
             agent_status: AgentStatus::Unknown,
+            worktree: None,
+            branch: None,
         }
     }
 
@@ -474,10 +476,12 @@ mod tests {
             display_agent: None,
             agent_status: AgentStatus::Idle,
             cwd: None,
+            foreground_cwd: None,
             label: None,
             title: None,
             custom_status: None,
             terminal_id: format!("term_{id}"),
+            branch: None,
         }
     }
 
