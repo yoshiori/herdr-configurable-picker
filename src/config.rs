@@ -61,6 +61,9 @@ filter_clear   = ["a", "backspace"]
 [display]
 show_pane_count   = true
 show_agent_status = true
+# Agent icon in the meta column and detail panel (󰚩 claude · idle);
+# agentless panes get a terminal icon. No-op with icon_set = "ascii".
+show_agent_icon   = true
 show_cwd          = false
 
 # "nerd" | "ascii" | "emoji"
@@ -121,6 +124,7 @@ pub struct KeysConfig {
 pub struct DisplayConfig {
     pub show_pane_count: bool,
     pub show_agent_status: bool,
+    pub show_agent_icon: bool,
     pub show_cwd: bool,
     pub icon_set: String,
     pub accent: String,
@@ -196,6 +200,7 @@ impl Default for DisplayConfig {
         DisplayConfig {
             show_pane_count: true,
             show_agent_status: true,
+            show_agent_icon: true,
             show_cwd: false,
             icon_set: "nerd".to_string(),
             accent: "auto".to_string(),

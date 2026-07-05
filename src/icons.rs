@@ -26,6 +26,26 @@ impl IconSet {
         }
     }
 
+    /// Icon in front of the agent name in the meta column ("󰚩 claude ·
+    /// idle") and the detail panel. None for ascii — there is no readable
+    /// one-column ascii robot.
+    pub fn agent_icon(self) -> Option<&'static str> {
+        match self {
+            IconSet::Nerd => Some("\u{f06a9}"), // 󰚩 nf-md-robot
+            IconSet::Emoji => Some("🤖"),
+            IconSet::Ascii => None,
+        }
+    }
+
+    /// Same, for agentless panes ("shell").
+    pub fn shell_icon(self) -> Option<&'static str> {
+        match self {
+            IconSet::Nerd => Some("\u{f120}"), //  nf-fa-terminal
+            IconSet::Emoji => Some("🐚"),
+            IconSet::Ascii => None,
+        }
+    }
+
     pub fn icon(self, status: AgentStatus, tick: u32) -> &'static str {
         match (self, status) {
             (IconSet::Nerd, AgentStatus::Blocked) => "◉",
@@ -54,6 +74,18 @@ impl IconSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_and_shell_icons_exist_except_in_ascii() {
+        // The nerd robot matches the user-facing convention (tmux
+        // automatic-rename uses the same glyph for claude panes).
+        assert_eq!(IconSet::Nerd.agent_icon(), Some("\u{f06a9}"));
+        assert_eq!(IconSet::Emoji.agent_icon(), Some("🤖"));
+        assert_eq!(IconSet::Ascii.agent_icon(), None);
+        assert_eq!(IconSet::Nerd.shell_icon(), Some("\u{f120}"));
+        assert_eq!(IconSet::Emoji.shell_icon(), Some("🐚"));
+        assert_eq!(IconSet::Ascii.shell_icon(), None);
+    }
 
     #[test]
     fn parses_known_sets_only() {
