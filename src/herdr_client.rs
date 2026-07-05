@@ -79,6 +79,9 @@ pub struct PaneInfo {
     pub label: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// User/plugin-set status text; wins over the agent state name.
+    #[serde(default)]
+    pub custom_status: Option<String>,
     pub terminal_id: String,
 }
 

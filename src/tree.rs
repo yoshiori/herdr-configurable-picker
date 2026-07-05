@@ -67,6 +67,8 @@ pub struct Row {
     pub detail: Vec<(&'static str, String)>,
     /// Pane rows: working directory, for the optional show_cwd column.
     pub cwd: Option<String>,
+    /// Pane rows: user/plugin-set status text; wins over the state name.
+    pub custom_status: Option<String>,
 }
 
 #[derive(Debug)]
@@ -297,6 +299,7 @@ impl Tree {
                     ("status", ws_status.name().to_string()),
                 ],
                 cwd: None,
+                custom_status: None,
             });
             for (tab_idx, (tab, (tab_shown, pane_shown))) in
                 ws.tabs.iter().zip(&tab_states).enumerate()
@@ -330,6 +333,7 @@ impl Tree {
                             ("status", tab.info.agent_status.name().to_string()),
                         ],
                         cwd: None,
+                        custom_status: None,
                     });
                 }
                 for (pane_idx, pane) in tab.panes.iter().enumerate() {
@@ -352,7 +356,13 @@ impl Tree {
                             "agent",
                             agent.clone().unwrap_or_else(|| "shell".to_string()),
                         ),
-                        ("status", pane.info.agent_status.name().to_string()),
+                        (
+                            "status",
+                            pane.info
+                                .custom_status
+                                .clone()
+                                .unwrap_or_else(|| pane.info.agent_status.name().to_string()),
+                        ),
                     ];
                     if let Some(cwd) = &pane.info.cwd {
                         detail.push(("cwd", cwd.clone()));
@@ -376,6 +386,7 @@ impl Tree {
                         focus_target: FocusTarget::Pane(pane.info.pane_id.clone()),
                         detail,
                         cwd: pane.info.cwd.clone(),
+                        custom_status: pane.info.custom_status.clone(),
                     });
                 }
             }
@@ -558,11 +569,12 @@ pub fn drop_own_overlay_pane(
 /// agent label -> "pane N" from the public id suffix ("w1:p8" -> "pane 8").
 /// (The built-in's final launch-command fallback is not exposed by the API.)
 fn pane_label(info: &PaneInfo) -> String {
-    for candidate in [&info.title, &info.label, &info.agent, &info.display_agent] {
-        if let Some(text) = candidate {
-            if !text.is_empty() {
-                return text.clone();
-            }
+    for candidate in [&info.title, &info.label, &info.agent, &info.display_agent]
+        .into_iter()
+        .flatten()
+    {
+        if !candidate.is_empty() {
+            return candidate.clone();
         }
     }
     let suffix = info
@@ -621,6 +633,7 @@ mod tests {
             cwd: None,
             label: None,
             title: None,
+            custom_status: None,
             terminal_id: format!("term_{id}"),
         }
     }
@@ -975,6 +988,7 @@ mod tests {
         let mut with_meta = pane("w1:p1", "w1:t1", "w1", true, Some("claude"));
         with_meta.cwd = Some("/home/u/repo".to_string());
         with_meta.title = Some("make -j8".to_string());
+        with_meta.custom_status = Some("reviewing".to_string());
         let tree = Tree::build(
             vec![workspace("w1", 1, "alpha", true)],
             vec![
@@ -1000,11 +1014,13 @@ mod tests {
             vec![
                 ("id", "w1:p1".to_string()),
                 ("agent", "claude".to_string()),
-                ("status", "idle".to_string()),
+                // custom_status wins over the state name ("idle").
+                ("status", "reviewing".to_string()),
                 ("cwd", "/home/u/repo".to_string()),
                 ("title", "make -j8".to_string()),
             ]
         );
+        assert_eq!(rows[2].custom_status.as_deref(), Some("reviewing"));
 
         let agentless = &rows[3].detail;
         assert!(agentless.contains(&("agent", "shell".to_string())));

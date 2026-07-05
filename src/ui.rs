@@ -345,12 +345,23 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
 
 fn right_column(row: &Row, view: &ViewOptions) -> String {
     if row.kind == RowKind::Pane {
-        let agent = row.agent.as_deref().unwrap_or("shell");
+        // The built-in's pane meta: "{agent} · {status}" for agent panes,
+        // bare "shell" otherwise. A custom status wins over the state name.
+        let base = match &row.agent {
+            Some(agent) => {
+                let status = row
+                    .custom_status
+                    .clone()
+                    .unwrap_or_else(|| row.agent_status.name().to_string());
+                format!("{agent} · {status}")
+            }
+            None => "shell".to_string(),
+        };
         match (&row.cwd, view.show_cwd) {
             (Some(cwd), true) => {
-                format!("{agent}  {}", shorten_home(cwd, view.home.as_deref()))
+                format!("{base}  {}", shorten_home(cwd, view.home.as_deref()))
             }
-            _ => agent.to_string(),
+            _ => base,
         }
     } else if view.show_pane_count {
         let panes = if row.pane_count == 1 { "pane" } else { "panes" };
@@ -422,6 +433,7 @@ mod tests {
             cwd: Some("/home/u/src/repo".to_string()),
             label: None,
             title: None,
+            custom_status: None,
             terminal_id: format!("term_{id}"),
         }
     }
@@ -529,8 +541,17 @@ mod tests {
         assert!(screen.contains("    ○ claude"), "indented pane:\n{screen}");
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let lines = buffer_lines(&terminal);
+        let agent_row = lines.iter().find(|l| l.contains("○ claude")).unwrap();
+        assert!(
+            agent_row.contains("claude · idle"),
+            "agent pane meta like the built-in: {agent_row:?}"
+        );
         let pane2 = lines.iter().find(|l| l.contains("pane 2")).unwrap();
         assert!(pane2.contains("shell"), "agentless column: {pane2:?}");
+        assert!(
+            !pane2.contains("· idle"),
+            "shell panes carry no status text: {pane2:?}"
+        );
     }
 
     #[test]
