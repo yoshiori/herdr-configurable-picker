@@ -428,7 +428,10 @@ mod tests {
 
         assert_eq!(
             press(&mut app, &keymaps, "enter"),
-            Outcome::Focus(FocusTarget::Pane("w1:p1".to_string()))
+            Outcome::Focus(FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            })
         );
     }
 
@@ -462,7 +465,10 @@ mod tests {
         let mut app2 = App::new(tree(InitialExpansion::All), EnterOnBranch::Expand);
         assert_eq!(
             press(&mut app2, &keymaps, "enter"),
-            Outcome::Focus(FocusTarget::Pane("w1:p1".to_string()))
+            Outcome::Focus(FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            })
         );
     }
 

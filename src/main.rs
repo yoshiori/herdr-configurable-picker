@@ -129,10 +129,17 @@ fn main() -> ExitCode {
         let focused = match &target {
             FocusTarget::Workspace(id) => client.focus_workspace(id),
             FocusTarget::Tab(id) => client.focus_tab(id),
-            FocusTarget::Pane(id) => client.focus_pane(id),
+            // Socket-side pane.focus only exists after herdr 0.7.1; older
+            // servers reject the method, so fall back to the pane's tab
+            // (which lands on that tab's focused pane).
+            FocusTarget::Pane { pane_id, tab_id } => client
+                .focus_pane(pane_id)
+                .or_else(|_| client.focus_tab(tab_id)),
         };
         if let Err(e) = focused {
-            eprintln!("herdr-configurable-picker: {e:#}");
+            // The pane (and its stderr) vanishes the moment we return, so
+            // the log file is the only place this error can survive.
+            report_warnings(&[format!("focus failed for {target:?}: {e:#}")]);
         }
     }
     // Exit 0 even on cancel: the overlay closing is the normal outcome, and

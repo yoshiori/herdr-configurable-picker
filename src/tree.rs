@@ -42,7 +42,12 @@ pub enum RowKind {
 pub enum FocusTarget {
     Workspace(String),
     Tab(String),
-    Pane(String),
+    /// `tab_id` is the fallback target: herdr only grew the socket-side
+    /// `pane.focus` after 0.7.1, so older servers focus the pane's tab.
+    Pane {
+        pane_id: String,
+        tab_id: String,
+    },
 }
 
 /// One visible line of the tree.
@@ -383,7 +388,10 @@ impl Tree {
                         agent,
                         agent_status: pane.info.agent_status,
                         is_current: current == Some(pane_path),
-                        focus_target: FocusTarget::Pane(pane.info.pane_id.clone()),
+                        focus_target: FocusTarget::Pane {
+                            pane_id: pane.info.pane_id.clone(),
+                            tab_id: pane.info.tab_id.clone(),
+                        },
                         detail,
                         cwd: pane.info.cwd.clone(),
                         custom_status: pane.info.custom_status.clone(),
@@ -815,7 +823,13 @@ mod tests {
             FocusTarget::Workspace("w1".to_string())
         );
         assert_eq!(rows[1].focus_target, FocusTarget::Tab("w1:t1".to_string()));
-        assert_eq!(rows[2].focus_target, FocusTarget::Pane("w1:p1".to_string()));
+        assert_eq!(
+            rows[2].focus_target,
+            FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            }
+        );
         assert_eq!(rows[2].agent.as_deref(), Some("claude"));
         assert_eq!(rows[3].agent, None, "agentless pane");
         assert_eq!(rows[1].pane_count, 2, "tab pane count");
