@@ -36,7 +36,7 @@ id = "yoshiori.herdr-configurable-picker"
 name = "herdr-configurable-picker"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Tree-based goto picker with fully configurable keybindings"
+description = "Goto picker with Emacs-style movement, IME-safe keys, and fully configurable bindings"
 platforms = ["linux", "macos"]
 
 [[build]]
