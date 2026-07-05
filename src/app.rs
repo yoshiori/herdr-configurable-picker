@@ -613,7 +613,11 @@ mod tests {
         type_text(&mut app, &keymaps, "two");
         assert_eq!(app.query, "two");
         let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["alpha", "a-two"]);
+        assert_eq!(
+            labels,
+            vec!["alpha", "a-two", "pane 2"],
+            "tab match reveals its panes"
+        );
         assert_eq!(cursor_label(&app), "a-two", "cursor lands on the match");
     }
 
@@ -638,7 +642,7 @@ mod tests {
         assert!(app.rows().is_empty());
         press(&mut app, &keymaps, "backspace");
         assert_eq!(app.query, "two");
-        assert_eq!(app.rows().len(), 2, "backspace re-widens the filter");
+        assert_eq!(app.rows().len(), 3, "backspace re-widens the filter");
 
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(app.query, "");
@@ -656,7 +660,7 @@ mod tests {
         assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Continue);
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.query, "two", "filter survives exiting the prompt");
-        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows().len(), 3);
 
         // Like the built-in: esc with a leftover filter clears it first...
         assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Continue);
@@ -726,7 +730,11 @@ mod tests {
 
         press(&mut app, &keymaps, "/");
         type_text(&mut app, &keymaps, "two");
-        assert_eq!(app.rows().len(), 2, "filter reveals the match");
+        assert_eq!(
+            app.rows().len(),
+            3,
+            "filter reveals the match and its panes"
+        );
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(
             app.rows().len(),
@@ -795,11 +803,15 @@ mod tests {
 
         press(&mut app, &keymaps, "/");
         type_text(&mut app, &keymaps, "two");
-        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows().len(), 3);
 
         app.replace_tree(tree(InitialExpansion::All));
         let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["alpha", "a-two"], "filter survives refresh");
+        assert_eq!(
+            labels,
+            vec!["alpha", "a-two", "pane 2"],
+            "filter survives refresh"
+        );
         assert_eq!(app.query, "two");
     }
 
