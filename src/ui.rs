@@ -227,17 +227,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
 
     // The header line is always there, like the built-in's: the search
     // prompt (a dim placeholder until it is used), or the active state
-    // filter, with the row count at the right edge.
+    // filter, with the row count at the right edge — separated from the
+    // tree by a rule, mirroring the footer's.
     let [header_area, main_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(2),
         Constraint::Min(1),
         Constraint::Length(2),
     ])
     .areas(inner);
 
     {
+        let header_block = Block::new()
+            .borders(Borders::BOTTOM)
+            .border_style(border_style);
+        let header_inner = header_block.inner(header_area);
+        frame.render_widget(header_block, header_area);
         let [prompt_area, count_area] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).areas(header_area);
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).areas(header_inner);
         if let Some(status) = app.state_filter {
             // Active state filter (b/w/i/d): show which one.
             let style = match status_color(status) {
@@ -1039,8 +1045,8 @@ mod tests {
             lines[0]
         );
         assert!(
-            lines[1].contains("mothership"),
-            "the list starts below the header: {:?}",
+            lines[2].contains("mothership"),
+            "the list starts below the header rule: {:?}",
             lines[1]
         );
     }
@@ -1133,7 +1139,7 @@ mod tests {
             "row under cursor must be scrolled into view:\n{screen}"
         );
         // 12 rows minus the footer (2) -> 10; herdr owns the pane border.
-        assert_eq!(app.viewport_height, 9);
+        assert_eq!(app.viewport_height, 8);
     }
 
     #[test]
@@ -1149,7 +1155,7 @@ mod tests {
 
         // herdr draws the pane chrome; our canvas starts with content.
         assert!(
-            lines[1].contains("mothership"),
+            lines[2].contains("mothership"),
             "no own border, first line is the list: {:?}",
             lines[0]
         );
