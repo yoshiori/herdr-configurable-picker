@@ -462,7 +462,7 @@ mod tests {
 
         assert!(!screen.contains("main"), "no tab row:\n{screen}");
         assert!(
-            screen.contains("  ○ pane 1"),
+            screen.contains("  ○ claude"),
             "panes at depth 1, right under the workspace:\n{screen}"
         );
     }
@@ -526,7 +526,7 @@ mod tests {
         // ws=unknown "·", tab=working "●", panes=idle "○".
         assert!(screen.contains("▼ · mothership"), "screen:\n{screen}");
         assert!(screen.contains("  ▼ ● main"), "indented tab:\n{screen}");
-        assert!(screen.contains("    ○ pane 1"), "indented pane:\n{screen}");
+        assert!(screen.contains("    ○ claude"), "indented pane:\n{screen}");
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let lines = buffer_lines(&terminal);
         let pane2 = lines.iter().find(|l| l.contains("pane 2")).unwrap();
@@ -544,7 +544,7 @@ mod tests {
         let screen = screen(&terminal);
         assert!(screen.contains("▼ - mothership"), "screen:\n{screen}");
         assert!(screen.contains("▼ + main"), "screen:\n{screen}");
-        assert!(screen.contains("o pane 1"), "screen:\n{screen}");
+        assert!(screen.contains("o claude"), "screen:\n{screen}");
     }
 
     #[test]
@@ -657,15 +657,15 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         let lines = buffer_lines(&terminal);
-        // "○ pane 1" (indented) is the list row; the detail panel header
+        // "○ claude" (indented) is the list row; the detail panel header
         // also says "pane 1" but without the icon.
         let cursor_y = lines
             .iter()
-            .position(|line| line.contains("○ pane 1"))
+            .position(|line| line.contains("○ claude"))
             .expect("cursor row must be on screen") as u16;
         let x = lines[cursor_y as usize]
             .chars()
-            .position(|c| c == 'p')
+            .position(|c| c == 'c')
             .unwrap() as u16;
         let style = buffer.cell((x, cursor_y)).unwrap().style();
         assert!(
@@ -680,7 +680,7 @@ mod tests {
         let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
 
-        let current = lines.iter().find(|l| l.contains("○ pane 1")).unwrap();
+        let current = lines.iter().find(|l| l.contains("○ claude")).unwrap();
         assert!(current.contains("→"), "current row: {current:?}");
         let other = lines.iter().find(|l| l.contains("○ pane 2")).unwrap();
         assert!(!other.contains("→"), "other row: {other:?}");

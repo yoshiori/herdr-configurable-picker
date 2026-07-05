@@ -553,11 +553,17 @@ pub fn drop_own_overlay_pane(
     }
 }
 
-/// Pane display label: the user-set label wins; otherwise "pane N" derived
-/// from the public id suffix ("w1:p8" -> "pane 8").
+/// Pane display label, mirroring the built-in goto's chain
+/// (`navigator_pane_rows_for_tab`): effective title -> manual label ->
+/// agent label -> "pane N" from the public id suffix ("w1:p8" -> "pane 8").
+/// (The built-in's final launch-command fallback is not exposed by the API.)
 fn pane_label(info: &PaneInfo) -> String {
-    if let Some(label) = &info.label {
-        return label.clone();
+    for candidate in [&info.title, &info.label, &info.agent, &info.display_agent] {
+        if let Some(text) = candidate {
+            if !text.is_empty() {
+                return text.clone();
+            }
+        }
     }
     let suffix = info
         .pane_id
@@ -653,7 +659,7 @@ mod tests {
         // is skipped and the pane hangs directly off the workspace.
         assert_eq!(
             labels(&rows),
-            vec!["alpha", "a-one", "pane 1", "pane 2", "a-two", "pane 3", "beta", "pane 1"]
+            vec!["alpha", "a-one", "claude", "pane 2", "a-two", "pane 3", "beta", "pane 1"]
         );
         let depths: Vec<u8> = rows.iter().map(|r| r.depth).collect();
         assert_eq!(depths, vec![0, 1, 2, 2, 1, 2, 0, 1]);
@@ -693,9 +699,10 @@ mod tests {
         // cannot match it either — the row does not exist).
         assert!(tree.visible_rows_filtered("b-one").is_empty());
         // A pane match still reveals the chain: workspace -> pane.
+        // (w1:p1 is labeled "claude" now, so only beta's pane matches.)
         assert_eq!(
             labels(&tree.visible_rows_filtered("pane 1")),
-            vec!["alpha", "a-one", "pane 1", "beta", "pane 1"]
+            vec!["beta", "pane 1"]
         );
     }
 
@@ -704,7 +711,7 @@ mod tests {
         let rows = fixture(InitialExpansion::CurrentWorkspace).visible_rows();
         assert_eq!(
             labels(&rows),
-            vec!["alpha", "a-one", "pane 1", "pane 2", "a-two", "beta"]
+            vec!["alpha", "a-one", "claude", "pane 2", "a-two", "beta"]
         );
         assert!(rows[0].expanded, "focused workspace expanded");
         assert!(rows[1].expanded, "focused tab expanded");
@@ -755,7 +762,7 @@ mod tests {
             .filter(|r| r.is_current)
             .map(|r| r.label.as_str())
             .collect();
-        assert_eq!(current, vec!["pane 1"], "focused pane when visible");
+        assert_eq!(current, vec!["claude"], "focused pane when visible");
 
         let mut tree = fixture(InitialExpansion::All);
         let tab_path = tree.visible_rows()[1].path;
@@ -804,19 +811,32 @@ mod tests {
     }
 
     #[test]
-    fn pane_label_prefers_explicit_label_then_id_suffix() {
-        let mut with_label = pane("w1:p7", "w1:t1", "w1", false, None);
-        with_label.label = Some("builder".to_string());
+    fn pane_label_follows_the_builtin_chain() {
+        // title > manual label > agent label > "pane N"
+        let mut titled = pane("w1:p1", "w1:t1", "w1", false, Some("claude"));
+        titled.title = Some("make -j8".to_string());
+        titled.label = Some("builder".to_string());
+
+        let mut labeled = pane("w1:p2", "w1:t1", "w1", false, Some("claude"));
+        labeled.label = Some("builder".to_string());
+
+        let agent_only = pane("w1:p3", "w1:t1", "w1", false, Some("claude"));
+
+        let mut empty_title = pane("w1:p8", "w1:t1", "w1", false, None);
+        empty_title.title = Some(String::new()); // empty strings do not count
+
         let tree = Tree::build(
             vec![workspace("w1", 1, "alpha", true)],
-            vec![tab("w1:t1", "w1", 1, "a-one", true, 2)],
-            vec![with_label, pane("w1:p8", "w1:t1", "w1", false, None)],
+            vec![tab("w1:t1", "w1", 1, "a-one", true, 4)],
+            vec![titled, labeled, agent_only, empty_title],
             InitialExpansion::All,
         );
         let rows = tree.visible_rows();
-        // Single-tab workspace: panes at rows 1 and 2, no tab row.
-        assert_eq!(rows[1].label, "builder");
-        assert_eq!(rows[2].label, "pane 8");
+        // Single-tab workspace: panes at rows 1..=4, no tab row.
+        assert_eq!(rows[1].label, "make -j8");
+        assert_eq!(rows[2].label, "builder");
+        assert_eq!(rows[3].label, "claude");
+        assert_eq!(rows[4].label, "pane 8");
     }
 
     #[test]
