@@ -166,9 +166,9 @@ Rendered inside the overlay pane herdr spawns. We do **not** read the outer term
 ```
 ┌ goto ─────────────────────────────────────────────────────────────────────┐
 │                                                                            │
-│ ▼ ○ mothership                                       1 pane   unknown     │
+│ ▼ ○ picker                                           1 pane   unknown     │
 │   → ○ pane 1                                                  shell        │
-│ ▼ ● mothership › tab2                                2 panes  working     │
+│ ▼ ● picker › tab2                                    2 panes  working     │
 │     ○ pane 2                                                  shell        │
 │     ○ pane 3                                                  shell        │
 │ ▶ ✓ herdr                                            1 pane   idle         │

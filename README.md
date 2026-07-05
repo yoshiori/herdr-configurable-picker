@@ -18,13 +18,13 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 
 ```
 ┌ goto ──────────────────────────────────────────────┬────────────────────────┐
-│  ▼ · mothership                            3 panes │ pane 2                 │
+│  ▼ · picker                                3 panes │ picker/tab2/pane 2     │
 │    ▶ · 1                                    1 pane │                        │
 │    ▼ ● tab2                                2 panes │ id      w4:p2          │
 │      ● pane 2                               claude │ agent   claude         │
-│      ○ pane 3                                shell │ status  working        │
-│  ▶ ○ herdr                                  1 pane │ cwd     ~/src/mothersh…│
-│→     ○ pane 1                                shell │                        │
+│      ○ pane 3                                shell │ status  ⠋ working      │
+│  ▶ ○ herdr                                  1 pane │ cwd     ~/src/picker   │
+│→     ○ pane 1                                shell │ branch  main           │
 │                                                    │                        │
 ├────────────────────────────────────────────────────┴────────────────────────┤
 │ ↑/↓ move   → expand   ← collapse   / search   enter accept   esc cancel     │

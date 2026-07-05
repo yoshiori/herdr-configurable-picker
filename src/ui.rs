@@ -464,7 +464,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view
         Line::styled(
             format!(
                 " {}",
-                middle_elide(&row.label, (inner.width as usize).saturating_sub(1))
+                middle_elide(&row.title, (inner.width as usize).saturating_sub(1))
             ),
             Style::new().add_modifier(Modifier::BOLD),
         ),
@@ -618,7 +618,7 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions, tick: u32) -> Line<'sta
         spans.push(Span::styled(format!("{icon} "), style));
     }
     // Bold workspaces anchor the hierarchy visually. Like the built-in,
-    // their pane count rides in the label ("mothership (3)"); the display
+    // their pane count rides in the label ("picker (3)"); the display
     // suffix stays out of Row.label so search and the detail panel see the
     // clean name.
     let label_style = if row.kind == RowKind::Workspace {
@@ -767,7 +767,7 @@ mod tests {
     fn sample_app() -> App {
         // Two tabs so the tab level actually renders (single-tab
         // workspaces skip it, like the built-in goto).
-        let mut ws = workspace("w1", 1, "mothership", true);
+        let mut ws = workspace("w1", 1, "picker", true);
         ws.pane_count = 3;
         let tree = Tree::build(
             vec![ws],
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn single_tab_workspace_renders_panes_directly_under_it() {
         let tree = Tree::build(
-            vec![workspace("w1", 1, "mothership", true)],
+            vec![workspace("w1", 1, "picker", true)],
             vec![tab("w1:t1", "w1", 1, "main", true)],
             vec![
                 pane("w1:p1", "w1:t1", "w1", true, Some("claude")),
@@ -866,7 +866,7 @@ mod tests {
 
         // ws=unknown "·", tab=working "●", panes=idle "○".
         assert!(
-            screen.contains("▾ ○ mothership (3)"),
+            screen.contains("▾ ○ picker (3)"),
             "workspace pane count rides in the label:\n{screen}"
         );
         assert!(screen.contains("  ├── ⠋ main"), "indented tab:\n{screen}");
@@ -877,7 +877,7 @@ mod tests {
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let ws_row = buffer_lines(&terminal)
             .into_iter()
-            .find(|l| l.contains("mothership"))
+            .find(|l| l.contains("picker"))
             .unwrap();
         assert!(
             !ws_row.contains("3 panes"),
@@ -906,7 +906,7 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▾ o mothership"), "screen:\n{screen}");
+        assert!(screen.contains("▾ o picker"), "screen:\n{screen}");
         assert!(screen.contains("├── | main"), "screen:\n{screen}");
         assert!(screen.contains("v claude"), "screen:\n{screen}");
     }
@@ -921,10 +921,10 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▾ mothership"), "no icon:\n{screen}");
+        assert!(screen.contains("▾ picker"), "no icon:\n{screen}");
         assert!(!screen.contains("2 panes"), "no pane counts:\n{screen}");
         assert!(
-            !screen.contains("mothership ("),
+            !screen.contains("picker ("),
             "no label suffix either:\n{screen}"
         );
     }
@@ -1007,6 +1007,18 @@ mod tests {
     }
 
     #[test]
+    fn detail_header_shows_the_ancestor_path() {
+        let mut app = sample_app(); // cursor on the claude pane in tab "main"
+        let terminal = render(80, 24, &mut app);
+        let screen = screen(&terminal);
+
+        assert!(
+            screen.contains("picker/main/claude"),
+            "path title, not the bare label:\n{screen}"
+        );
+    }
+
+    #[test]
     fn detail_status_line_carries_the_status_icon() {
         let mut app = sample_app(); // cursor on the idle claude pane
         let terminal = render(80, 24, &mut app);
@@ -1081,10 +1093,7 @@ mod tests {
             !screen.contains("w1:p1"),
             "no detail ids on a narrow screen:\n{screen}"
         );
-        assert!(
-            screen.contains("mothership"),
-            "list still renders:\n{screen}"
-        );
+        assert!(screen.contains("picker"), "list still renders:\n{screen}");
     }
 
     #[test]
@@ -1117,7 +1126,7 @@ mod tests {
         let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
 
-        let ws = lines.iter().find(|l| l.contains("mothership")).unwrap();
+        let ws = lines.iter().find(|l| l.contains("picker")).unwrap();
         assert!(ws.contains("◆"), "current workspace row: {ws:?}");
         let current = lines.iter().find(|l| l.contains("✓ claude")).unwrap();
         assert!(current.contains("◆"), "current pane row: {current:?}");
@@ -1211,7 +1220,7 @@ mod tests {
             lines[0]
         );
         assert!(
-            lines[2].contains("mothership"),
+            lines[2].contains("picker"),
             "the list starts below the header rule: {:?}",
             lines[2]
         );
@@ -1314,7 +1323,7 @@ mod tests {
             .map(|n| pane(&format!("w1:p{n}"), "w1:t1", "w1", n == 20, None))
             .collect();
         let tree = Tree::build(
-            vec![workspace("w1", 1, "mothership", true)],
+            vec![workspace("w1", 1, "picker", true)],
             vec![tab("w1:t1", "w1", 1, "main", true)],
             panes,
             InitialExpansion::All,
@@ -1344,7 +1353,7 @@ mod tests {
 
         // herdr draws the pane chrome; our canvas starts with content.
         assert!(
-            lines[2].contains("mothership"),
+            lines[2].contains("picker"),
             "no own border, the list starts under the header rule: {:?}",
             lines[2]
         );
@@ -1357,11 +1366,11 @@ mod tests {
             "footer separator carries the accent color"
         );
 
-        let y = lines
-            .iter()
-            .position(|l| l.contains("○ mothership"))
-            .unwrap() as u16;
-        let x = lines[y as usize].chars().position(|c| c == 'm').unwrap() as u16;
+        let y = lines.iter().position(|l| l.contains("○ picker")).unwrap() as u16;
+        // Column of the label's first char: byte offset → char count (the
+        // guide glyphs before it are multi-byte), plus the "○ " prefix.
+        let byte = lines[y as usize].find("○ picker").unwrap();
+        let x = (lines[y as usize][..byte].chars().count() + 2) as u16;
         assert!(
             buffer
                 .cell((x, y))
@@ -1499,7 +1508,7 @@ mod tests {
     fn workspace_right_column_shows_the_activity_summary() {
         let mut blocked = pane("w1:p3", "w1:t2", "w1", false, Some("claude"));
         blocked.agent_status = AgentStatus::Blocked;
-        let mut ws = workspace("w1", 1, "mothership", true);
+        let mut ws = workspace("w1", 1, "picker", true);
         ws.pane_count = 3;
         let tree = Tree::build(
             vec![ws],
@@ -1518,7 +1527,7 @@ mod tests {
         let terminal = render(100, 24, &mut app);
         let lines = buffer_lines(&terminal);
 
-        let ws_row = lines.iter().find(|l| l.contains("mothership")).unwrap();
+        let ws_row = lines.iter().find(|l| l.contains("picker")).unwrap();
         assert!(ws_row.contains("1 blocked"), "ws activity: {ws_row:?}");
         let logs_row = lines.iter().find(|l| l.contains("logs")).unwrap();
         assert!(
@@ -1612,7 +1621,7 @@ mod tests {
         let mut long_cwd = pane("w1:p1", "w1:t1", "w1", true, Some("claude"));
         long_cwd.cwd = Some("/home/u/src/github.com/yoshiori/picker-repo".to_string());
         let tree = Tree::build(
-            vec![workspace("w1", 1, "mothership", true)],
+            vec![workspace("w1", 1, "picker", true)],
             vec![
                 tab("w1:t1", "w1", 1, "main", true),
                 tab("w1:t2", "w1", 2, "logs", false),

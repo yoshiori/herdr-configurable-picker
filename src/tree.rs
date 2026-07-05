@@ -57,6 +57,11 @@ pub struct Row {
     pub kind: RowKind,
     pub depth: u8,
     pub label: String,
+    /// The label with its ancestors ("ws/tab/pane"), for the detail panel
+    /// header — a bare tab label like "1" identifies nothing on its own.
+    /// Follows the *displayed* hierarchy: single-tab workspaces skip the
+    /// tab segment, like their rows skip the tab level.
+    pub title: String,
     pub expandable: bool,
     pub expanded: bool,
     /// Branch rows: pane count under this node. Pane rows: 0.
@@ -398,6 +403,7 @@ impl Tree {
                 kind: RowKind::Workspace,
                 depth: 0,
                 label: ws.label.clone(),
+                title: ws.label.clone(),
                 expandable: if single_tab {
                     !ws.tabs[0].panes.is_empty()
                 } else {
@@ -462,6 +468,7 @@ impl Tree {
                         kind: RowKind::Tab,
                         depth: 1,
                         label: tab.info.label.clone(),
+                        title: format!("{}/{}", ws.label, tab.info.label),
                         expandable: !tab.panes.is_empty(),
                         expanded: match filter {
                             RowFilter::None => tab.expanded,
@@ -526,11 +533,17 @@ impl Tree {
                             detail.push(("title", title.clone()));
                         }
                     }
+                    let label = pane_label(&pane.info);
                     rows.push(Row {
                         path: pane_path,
                         kind: RowKind::Pane,
                         depth: if single_tab { 1 } else { 2 },
-                        label: pane_label(&pane.info),
+                        title: if single_tab {
+                            format!("{}/{}", ws.label, label)
+                        } else {
+                            format!("{}/{}/{}", ws.label, tab.info.label, label)
+                        },
+                        label,
                         expandable: false,
                         expanded: false,
                         pane_count: 0,
@@ -1293,6 +1306,25 @@ mod tests {
             agentless.iter().all(|(k, _)| *k != "cwd" && *k != "title"),
             "absent metadata stays out of the panel: {agentless:?}"
         );
+    }
+
+    #[test]
+    fn row_titles_carry_the_ancestor_path() {
+        let rows_all = fixture(InitialExpansion::All);
+        let rows = rows_all.visible_rows();
+        // fixture: alpha (a-one: claude+pane, a-two: pane), beta single-tab.
+        let by_label = |label: &str| rows.iter().find(|r| r.label == label).unwrap();
+
+        assert_eq!(by_label("alpha").title, "alpha");
+        assert_eq!(by_label("a-one").title, "alpha/a-one");
+        assert_eq!(by_label("claude").title, "alpha/a-one/claude");
+        // Single-tab workspaces skip the tab level in the rows, and the
+        // title follows suit.
+        let beta_pane = rows
+            .iter()
+            .find(|r| r.kind == RowKind::Pane && r.path.ws == by_label("beta").path.ws)
+            .unwrap();
+        assert_eq!(beta_pane.title, format!("beta/{}", beta_pane.label));
     }
 
     #[test]

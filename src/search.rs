@@ -23,10 +23,10 @@ mod tests {
 
     #[test]
     fn matches_case_insensitive_substrings() {
-        assert!(query_matches("mothership", "ship"));
-        assert!(query_matches("Mothership", "mother"));
-        assert!(query_matches("mothership", "SHIP"));
-        assert!(!query_matches("mothership", "shop"));
+        assert!(query_matches("picker", "ick"));
+        assert!(query_matches("Picker", "pick"));
+        assert!(query_matches("picker", "ICK"));
+        assert!(!query_matches("picker", "pique"));
     }
 
     #[test]
@@ -38,10 +38,10 @@ mod tests {
 
     #[test]
     fn multiple_words_all_must_match_in_any_order() {
-        let text = "mothership claude · working";
-        assert!(query_matches(text, "moth work"));
+        let text = "picker claude · working";
+        assert!(query_matches(text, "pick work"));
         assert!(query_matches(text, "working claude"));
-        assert!(!query_matches(text, "moth idle"));
+        assert!(!query_matches(text, "pick idle"));
     }
 
     #[test]
