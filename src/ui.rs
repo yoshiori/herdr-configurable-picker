@@ -245,6 +245,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
             .border_style(border_style);
         let header_inner = header_block.inner(header_area);
         frame.render_widget(header_block, header_area);
+        // A click on this line focuses the search, like the built-in.
+        app.prompt_row = header_inner.y;
         let [prompt_area, count_area] =
             Layout::horizontal([Constraint::Min(1), Constraint::Length(COUNT_WIDTH)])
                 .areas(header_inner);
@@ -308,6 +310,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         (main_area, None)
     };
     app.viewport_height = list_area.height;
+    app.list_rect = (list_area.x, list_area.y, list_area.width, list_area.height);
 
     if app.rows().is_empty() {
         let placeholder = if app.query.is_empty() && app.state_filter.is_none() {
@@ -335,7 +338,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         let list = List::new(items).highlight_style(highlight);
         let mut state = ListState::default().with_selected(Some(app.cursor));
         frame.render_stateful_widget(list, list_area, &mut state);
-        render_scrollbar(frame, list_area, app.rows().len(), state.offset(), view);
+        // The offset ratatui actually used — mouse hit-testing needs it.
+        app.list_offset = state.offset();
+        render_scrollbar(frame, list_area, app.rows().len(), app.list_offset, view);
     }
 
     if let Some(detail_area) = detail_area {
@@ -1382,6 +1387,16 @@ mod tests {
             "no scrollbar when everything fits: {:?}",
             lines[2]
         );
+    }
+
+    #[test]
+    fn draw_records_the_layout_for_mouse_hit_testing() {
+        let mut app = sample_app();
+        let _ = render(80, 24, &mut app);
+        assert_eq!(app.prompt_row, 0, "prompt on the first line");
+        assert_eq!(app.list_rect.1, 2, "list starts under the header rule");
+        assert_eq!(app.list_rect.3, app.viewport_height);
+        assert_eq!(app.list_offset, 0, "six rows fit without scrolling");
     }
 
     #[test]

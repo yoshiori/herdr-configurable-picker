@@ -77,6 +77,10 @@ initial_expansion = "all"
 
 # Enter on a branch node: "expand" or "jump"
 enter_on_branch = "jump"
+
+# Mouse support: hover to select, click to jump (branch carets toggle),
+# wheel to scroll. Like the built-in goto.
+mouse = true
 "##;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -126,6 +130,8 @@ pub struct DisplayConfig {
 pub struct BehaviorConfig {
     pub initial_expansion: String,
     pub enter_on_branch: String,
+    /// Hover, click-to-jump, caret toggling, and wheel scrolling.
+    pub mouse: bool,
 }
 
 fn keys(specs: &[&str]) -> Vec<String> {
@@ -175,6 +181,7 @@ impl Default for BehaviorConfig {
         BehaviorConfig {
             initial_expansion: "all".to_string(),
             enter_on_branch: "jump".to_string(),
+            mouse: true,
         }
     }
 }

@@ -41,6 +41,22 @@ pub enum Mode {
     Search,
 }
 
+/// Mouse events, translated from crossterm by the event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseInput {
+    Move { x: u16, y: u16 },
+    Click { x: u16, y: u16 },
+    ScrollUp,
+    ScrollDown,
+}
+
+/// Rows the mouse wheel moves per notch, like the built-in.
+const WHEEL_STEP: usize = 3;
+
+/// Columns from the list's left edge that count as the expand/collapse
+/// caret when clicking a branch row (the built-in's navigator_row_caret_at).
+const CARET_ZONE: u16 = 3;
+
 #[derive(Debug)]
 pub struct App {
     tree: Tree,
@@ -64,6 +80,14 @@ pub struct App {
     /// True when the snapshot itself had nothing to show (as opposed to a
     /// filter that currently matches nothing).
     tree_is_empty: bool,
+    /// Screen y of the search prompt line as of the last draw; a click
+    /// there focuses the search, like the built-in.
+    pub prompt_row: u16,
+    /// The list's screen rectangle `(x, y, w, h)` as of the last draw,
+    /// for mouse hit-testing.
+    pub list_rect: (u16, u16, u16, u16),
+    /// Index of the first visible row as of the last draw.
+    pub list_offset: usize,
 }
 
 impl App {
@@ -83,6 +107,9 @@ impl App {
             query: String::new(),
             state_filter: None,
             tree_is_empty,
+            prompt_row: 0,
+            list_rect: (0, 0, 0, 0),
+            list_offset: 0,
         }
     }
 
@@ -122,6 +149,58 @@ impl App {
             Mode::Normal => self.handle_normal_key(keymaps, key),
             Mode::Search => self.handle_search_key(keymaps, key),
         }
+    }
+
+    /// Mouse semantics lifted from the built-in: hover follows, a click
+    /// selects and accepts (or toggles, on a branch row's caret), the
+    /// prompt line focuses search, and the wheel moves three rows.
+    pub fn handle_mouse(&mut self, input: MouseInput) -> Outcome {
+        if self.tree_is_empty {
+            // Same as any key on an empty tree: close.
+            return Outcome::Cancel;
+        }
+        match input {
+            MouseInput::Move { x, y } => {
+                if let Some(idx) = self.row_at(x, y) {
+                    self.cursor = idx;
+                }
+                Outcome::Continue
+            }
+            MouseInput::Click { x, y } => {
+                if y == self.prompt_row {
+                    return self.apply(Action::SearchStart);
+                }
+                let Some(idx) = self.row_at(x, y) else {
+                    return Outcome::Continue;
+                };
+                self.cursor = idx;
+                let is_branch = self.rows[idx].kind != RowKind::Pane;
+                if is_branch && x <= self.list_rect.0.saturating_add(CARET_ZONE) {
+                    return self.apply(Action::Toggle);
+                }
+                self.apply(Action::Accept)
+            }
+            MouseInput::ScrollUp => {
+                self.cursor = self.cursor.saturating_sub(WHEEL_STEP);
+                Outcome::Continue
+            }
+            MouseInput::ScrollDown => {
+                if !self.rows.is_empty() {
+                    self.cursor = (self.cursor + WHEEL_STEP).min(self.rows.len() - 1);
+                }
+                Outcome::Continue
+            }
+        }
+    }
+
+    /// The row index under screen position `(x, y)`, if any.
+    fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let (rx, ry, rw, rh) = self.list_rect;
+        if x < rx || x >= rx.saturating_add(rw) || y < ry || y >= ry.saturating_add(rh) {
+            return None;
+        }
+        let idx = self.list_offset + (y - ry) as usize;
+        (idx < self.rows.len()).then_some(idx)
     }
 
     fn handle_normal_key(&mut self, keymaps: &Keymaps, key: KeyPress) -> Outcome {
@@ -890,5 +969,85 @@ mod tests {
         assert_eq!(EnterOnBranch::parse("jump"), Some(EnterOnBranch::Jump));
         assert_eq!(EnterOnBranch::parse("expand"), Some(EnterOnBranch::Expand));
         assert_eq!(EnterOnBranch::parse("teleport"), None);
+    }
+
+    /// The list as drawn: rows at y 2..12, prompt line at y 0.
+    fn app_with_layout() -> App {
+        let mut app = app();
+        app.prompt_row = 0;
+        app.list_rect = (0, 2, 40, 10);
+        app.list_offset = 0;
+        app
+    }
+
+    #[test]
+    fn hover_moves_the_cursor_over_rows_only() {
+        let mut app = app_with_layout();
+
+        assert_eq!(
+            app.handle_mouse(MouseInput::Move { x: 5, y: 5 }),
+            Outcome::Continue
+        );
+        assert_eq!(cursor_label(&app), "a-two", "row 3 sits at y 5");
+
+        app.handle_mouse(MouseInput::Move { x: 5, y: 9 });
+        assert_eq!(cursor_label(&app), "a-two", "y 9 is past the last row");
+        app.handle_mouse(MouseInput::Move { x: 41, y: 5 });
+        assert_eq!(cursor_label(&app), "a-two", "outside the list, no move");
+    }
+
+    #[test]
+    fn click_selects_and_accepts_a_row() {
+        let mut app = app_with_layout();
+
+        let outcome = app.handle_mouse(MouseInput::Click { x: 10, y: 4 });
+        assert_eq!(cursor_label(&app), "pane 1");
+        assert!(
+            matches!(outcome, Outcome::Focus(FocusTarget::Pane { .. })),
+            "click = select + accept, like the built-in: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn click_on_a_branch_caret_toggles_instead_of_jumping() {
+        let mut app = app_with_layout();
+
+        // The caret zone is the first four columns, like the built-in.
+        let outcome = app.handle_mouse(MouseInput::Click { x: 1, y: 2 });
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(cursor_label(&app), "alpha");
+        assert_eq!(app.rows().len(), 3, "alpha collapsed");
+
+        // Clicking the label part of a branch row accepts it.
+        let outcome = app.handle_mouse(MouseInput::Click { x: 10, y: 2 });
+        assert!(
+            matches!(outcome, Outcome::Focus(FocusTarget::Workspace(_))),
+            "label click jumps: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn click_on_the_prompt_row_enters_search() {
+        let mut app = app_with_layout();
+
+        assert_eq!(
+            app.handle_mouse(MouseInput::Click { x: 3, y: 0 }),
+            Outcome::Continue
+        );
+        assert_eq!(app.mode, Mode::Search);
+    }
+
+    #[test]
+    fn wheel_scrolls_the_cursor_three_rows_at_a_time() {
+        let mut app = app_with_layout();
+        app.cursor = 0;
+
+        app.handle_mouse(MouseInput::ScrollDown);
+        assert_eq!(app.cursor, 3);
+        app.handle_mouse(MouseInput::ScrollDown);
+        app.handle_mouse(MouseInput::ScrollDown);
+        assert_eq!(app.cursor, 6, "clamped at the last row");
+        app.handle_mouse(MouseInput::ScrollUp);
+        assert_eq!(app.cursor, 3);
     }
 }
