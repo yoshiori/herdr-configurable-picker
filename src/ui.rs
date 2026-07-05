@@ -346,32 +346,33 @@ fn middle_elide(text: &str, max: usize) -> String {
     format!("{head}…{}", &text[tail_start..])
 }
 
-/// Fits a path into `max` columns, preferring whole trailing segments
-/// ("…/herdr-configurable-picker") over a mid-segment cut; falls back to
-/// [`middle_elide`] when not even the last segment fits.
+/// Fits a path into `max` columns fish-style: intermediate segments shrink
+/// to their first character ("~/src/github.com/yoshiori/foo" ->
+/// "~/s/g/y/foo", dot-dirs keep the dot: ".config" -> ".c"), the leaf stays
+/// whole. Falls back to [`middle_elide`] when even that is too long.
 fn elide_path(path: &str, max: usize) -> String {
     if UnicodeWidthStr::width(path) <= max {
         return path.to_string();
     }
-    let mut kept = String::new();
-    for segment in path.rsplit('/') {
-        // "…/{segment}" or "…/{segment}/{kept}".
-        let separators = if kept.is_empty() { 2 } else { 3 };
-        let candidate_cols =
-            UnicodeWidthStr::width(segment) + UnicodeWidthStr::width(kept.as_str()) + separators;
-        if candidate_cols > max {
-            break;
-        }
-        kept = if kept.is_empty() {
-            segment.to_string()
-        } else {
-            format!("{segment}/{kept}")
-        };
-    }
-    if kept.is_empty() {
-        middle_elide(path, max)
+    let segments: Vec<&str> = path.split('/').collect();
+    let last = segments.len().saturating_sub(1);
+    let shortened: Vec<String> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, segment)| {
+            if i == last || *segment == "~" || segment.is_empty() {
+                (*segment).to_string()
+            } else {
+                let keep = if segment.starts_with('.') { 2 } else { 1 };
+                segment.chars().take(keep).collect()
+            }
+        })
+        .collect();
+    let shortened = shortened.join("/");
+    if UnicodeWidthStr::width(shortened.as_str()) <= max {
+        shortened
     } else {
-        format!("…/{kept}")
+        middle_elide(&shortened, max)
     }
 }
 
@@ -1216,21 +1217,22 @@ mod tests {
     }
 
     #[test]
-    fn elide_path_prefers_whole_trailing_segments() {
-        assert_eq!(elide_path("~/src/repo", 20), "~/src/repo");
+    fn elide_path_shortens_segments_fish_style() {
+        assert_eq!(elide_path("~/src/repo", 20), "~/src/repo", "fits as-is");
         assert_eq!(
             elide_path("~/src/github.com/yoshiori/picker", 20),
-            "…/yoshiori/picker"
+            "~/s/g/y/picker"
         );
+        assert_eq!(elide_path("/home/u/src/repo", 12), "/h/u/s/repo");
         assert_eq!(
-            elide_path("~/src/github.com/yoshiori/picker", 10),
-            "…/picker"
+            elide_path("~/.config/herdr/scripts", 15),
+            "~/.c/h/scripts",
+            "dot-dirs keep the dot"
         );
-        // Not even the last segment fits: fall back to the middle cut.
+        // Even fish-style is too long: fall back to the middle cut.
         let elided = elide_path("~/x/very-long-repository-name", 12);
         assert!(elided.contains('…'), "{elided}");
         assert!(UnicodeWidthStr::width(elided.as_str()) <= 12, "{elided}");
-        assert!(!elided.starts_with("…/"), "{elided}");
     }
 
     #[test]
@@ -1251,8 +1253,8 @@ mod tests {
         let screen = screen(&terminal);
 
         assert!(
-            screen.contains("…/yoshiori/picker-repo"),
-            "cwd keeps whole trailing segments:\n{screen}"
+            screen.contains("~/s/g/y/picker-repo"),
+            "cwd shortens fish-style, keeping the leaf:\n{screen}"
         );
     }
 
