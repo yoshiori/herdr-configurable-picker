@@ -249,15 +249,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
             Layout::horizontal([Constraint::Min(1), Constraint::Length(COUNT_WIDTH)])
                 .areas(header_inner);
         if let Some(status) = app.state_filter {
-            // Active state filter (b/w/i/d): show which one.
+            // Active state filter (b/w/i/d): "/ {icon} {name}" — the
+            // built-in's chip, with the state's own icon (the spinner for
+            // working) in the state color.
             let style = match status_color(status) {
                 Some(color) if view.color => Style::new().fg(color),
                 _ => Style::new(),
             };
-            let spans = vec![
-                Span::styled(" ⊙ ", dim_style(view)),
-                Span::styled(status.name(), style.add_modifier(Modifier::BOLD)),
-            ];
+            let mut spans = vec![Span::styled(" / ", dim_style(view))];
+            if let Some(set) = &view.icon_set {
+                spans.push(Span::styled(
+                    set.icon(status, app.tick),
+                    style.add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                status.name(),
+                style.add_modifier(Modifier::BOLD),
+            ));
             frame.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
         } else {
             // The trailing bar marks the prompt as focused (typing goes
@@ -1267,7 +1277,9 @@ mod tests {
         let terminal = render(80, 24, &mut app);
         let screen = screen(&terminal);
 
-        assert!(screen.contains("⊙ working"), "filter line:\n{screen}");
+        // The chip carries the state's own icon, like the built-in's
+        // push_state_chip — for working that is the spinner (tick 0).
+        assert!(screen.contains("⠋ working"), "filter line:\n{screen}");
         let lines = buffer_lines(&terminal);
         assert!(
             lines[0].trim_end().ends_with("3 panes"),
