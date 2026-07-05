@@ -21,10 +21,10 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 │  ▼ · picker                                3 panes │ picker/tab2/pane 2     │
 │    ▶ · 1                                    1 pane │                        │
 │    ▼ ● tab2                                2 panes │ id      w4:p2          │
-│      ● pane 2                               claude │ agent   claude         │
-│      ○ pane 3                                shell │ status  ⠋ working      │
+│      ● pane 2                             󰚩 claude │ agent   󰚩 claude       │
+│      ○ pane 3                               shell │ status  ⠋ working      │
 │  ▶ ○ herdr                                  1 pane │ cwd     ~/src/picker   │
-│→     ○ pane 1                                shell │ branch  main           │
+│→     ○ pane 1                               shell │ branch  main           │
 │                                                    │                        │
 ├────────────────────────────────────────────────────┴────────────────────────┤
 │ ↑/↓ move   → expand   ← collapse   / search   enter accept   esc cancel     │
@@ -40,6 +40,7 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 - Jumps to any node: workspaces, tabs, and panes — including agentless panes, via the socket-only `pane.focus` (with a `tab.focus` fallback for herdr ≤ 0.7.1).
 - A detail panel shows the selected node's id, agent, status (with its colored icon and the working spinner), cwd, and — inside a git repository — the current branch, read straight from `.git/HEAD` (no `git` subprocess; linked worktrees and detached HEADs included). Worktree workspaces also show their repo and branch.
 - Status icons in three sets (`nerd` / `ascii` / `emoji`), status colors, `NO_COLOR` support, and `[display]` toggles for icons, pane counts, and cwd.
+- Agent icons in the meta column and detail panel (`󰚩 claude · idle`,  for plain shells; 🤖/🐚 with `icon_set = "emoji"`), toggleable via `show_agent_icon`.
 - No external runtime dependencies (single Rust binary; TUI via [`ratatui`](https://ratatui.rs/)).
 - All keys user-configurable, including chords like `g g`.
 - Talks directly to herdr's API socket — no subprocess per call.

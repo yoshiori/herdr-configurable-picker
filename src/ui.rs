@@ -90,6 +90,9 @@ pub struct ViewOptions {
     /// `None` hides status icons entirely (`show_agent_status = false`).
     pub icon_set: Option<IconSet>,
     pub show_pane_count: bool,
+    /// Agent/shell icon in front of the meta column and the detail
+    /// panel's agent line.
+    pub show_agent_icon: bool,
     pub show_cwd: bool,
     /// False under NO_COLOR: keep the layout, drop the colors.
     pub color: bool,
@@ -136,6 +139,7 @@ impl ViewOptions {
             ViewOptions {
                 icon_set,
                 show_pane_count: display.show_pane_count,
+                show_agent_icon: display.show_agent_icon,
                 show_cwd: display.show_cwd,
                 color: !no_color,
                 home,
@@ -472,6 +476,18 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view
     ];
     for (key, value) in &row.detail {
         let key_span = Span::styled(format!(" {key:<key_width$}  "), dim_style(view));
+        // The agent line carries the same agent/shell icon as the meta
+        // column in the tree.
+        if *key == "agent" {
+            if let Some(icon) = agent_icon(row, view) {
+                lines.push(Line::from(vec![
+                    key_span,
+                    Span::raw(format!("{icon} ")),
+                    Span::raw(middle_elide(value, value_width.saturating_sub(2).max(1))),
+                ]));
+                continue;
+            }
+        }
         // The status line mirrors the tree rows: the status icon (the
         // animated spinner while working) and the status color.
         if *key == "status" {
@@ -655,6 +671,18 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions, tick: u32) -> Line<'sta
     Line::raw(truncate_to_width(&text, width))
 }
 
+/// The agent (or shell) icon for a pane row, honoring the icon set and the
+/// `show_agent_icon` toggle. The same convention as the user's tmux
+/// automatic-rename: 󰚩 for AI agents,  for plain shells.
+fn agent_icon(row: &Row, view: &ViewOptions) -> Option<&'static str> {
+    let set = view.icon_set.filter(|_| view.show_agent_icon)?;
+    if row.agent.is_some() {
+        set.agent_icon()
+    } else {
+        set.shell_icon()
+    }
+}
+
 fn right_column(row: &Row, view: &ViewOptions) -> String {
     if row.kind == RowKind::Pane {
         // The built-in's pane meta: "{agent} · {status}" for agent panes,
@@ -668,6 +696,10 @@ fn right_column(row: &Row, view: &ViewOptions) -> String {
                 format!("{agent} · {status}")
             }
             None => "shell".to_string(),
+        };
+        let base = match agent_icon(row, view) {
+            Some(icon) => format!("{icon} {base}"),
+            None => base,
         };
         match (&row.cwd, view.show_cwd) {
             (Some(cwd), true) => {
@@ -817,6 +849,7 @@ mod tests {
         ViewOptions {
             icon_set: Some(IconSet::Nerd),
             show_pane_count: true,
+            show_agent_icon: true,
             show_cwd: false,
             color: false,
             home: Some("/home/u".to_string()),
@@ -1003,6 +1036,68 @@ mod tests {
         assert!(
             screen.contains("~/src/repo"),
             "cwd shortened via view.home:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn meta_column_carries_agent_and_shell_icons() {
+        let mut app = sample_app();
+        let terminal = render(80, 24, &mut app);
+        let lines = buffer_lines(&terminal);
+
+        let agent_row = lines.iter().find(|l| l.contains("· idle")).unwrap();
+        assert!(
+            agent_row.contains("\u{f06a9} claude · idle"),
+            "robot in front of the agent meta: {agent_row:?}"
+        );
+        let shell_row = lines.iter().find(|l| l.contains("pane 2")).unwrap();
+        assert!(
+            shell_row.contains("\u{f120} shell"),
+            "terminal icon in front of shell meta: {shell_row:?}"
+        );
+    }
+
+    #[test]
+    fn agent_icons_respect_the_toggle_and_the_ascii_set() {
+        let mut app = sample_app();
+        let view = ViewOptions {
+            show_agent_icon: false,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let toggled_off = screen(&terminal);
+        assert!(
+            !toggled_off.contains('\u{f06a9}') && !toggled_off.contains('\u{f120}'),
+            "toggle off drops the icons:\n{toggled_off}"
+        );
+
+        // Ascii has no one-column robot; the meta stays bare.
+        let view = ViewOptions {
+            icon_set: Some(IconSet::Ascii),
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &view);
+        let ascii = screen(&terminal);
+        assert!(
+            ascii.contains("claude · idle") && !ascii.contains('\u{f06a9}'),
+            "ascii keeps the bare meta:\n{ascii}"
+        );
+    }
+
+    #[test]
+    fn detail_agent_line_carries_the_icon() {
+        let mut app = sample_app(); // cursor on the claude pane
+        let terminal = render(80, 24, &mut app);
+        let lines = buffer_lines(&terminal);
+
+        let agent_line = lines
+            .iter()
+            .find(|l| l.contains("agent"))
+            .expect("detail agent line");
+        assert!(
+            agent_line.contains("agent   \u{f06a9} claude")
+                || agent_line.contains("\u{f06a9} claude"),
+            "icon on the detail agent value: {agent_line:?}"
         );
     }
 
