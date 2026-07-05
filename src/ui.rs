@@ -291,22 +291,30 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions, tick: u32) -> Line<'sta
     } else {
         Style::new()
     };
-    let indent = "  ".repeat(row.depth as usize);
-    let glyph = if row.expandable {
-        if row.expanded {
-            "▼ "
-        } else {
-            "▶ "
-        }
-    } else if row.kind == RowKind::Pane {
-        ""
+    // Tree-command style guides: workspaces open with ▾/▸, children hang
+    // off │ / ├── / └── rails. A collapsed branch keeps a ▸ on its rail so
+    // hidden children stay discoverable.
+    let glyph = if row.kind == RowKind::Workspace {
+        if row.expanded { "▾ " } else { "▸ " }.to_string()
     } else {
-        "· " // childless workspace/tab: nothing to expand
+        let mut rail = String::from("  ");
+        for &continues in &row.ancestor_continues {
+            rail.push_str(if continues { "│   " } else { "    " });
+        }
+        let collapsed = row.expandable && !row.expanded;
+        rail.push_str(match (row.last_child, collapsed) {
+            (false, false) => "├── ",
+            (true, false) => "└── ",
+            (false, true) => "├─▸ ",
+            (true, true) => "└─▸ ",
+        });
+        rail
     };
 
     let mut spans = vec![
         Span::styled(marker.to_string(), marker_style),
-        Span::raw(format!(" {indent}{glyph}")),
+        Span::raw(" "),
+        Span::styled(glyph, dim_style(view)),
     ];
     if let Some(set) = view.icon_set {
         let icon = set.icon(row.agent_status, tick);
@@ -488,7 +496,7 @@ mod tests {
 
         assert!(!screen.contains("main"), "no tab row:\n{screen}");
         assert!(
-            screen.contains("  ✓ claude"),
+            screen.contains("  ├── ✓ claude"),
             "panes at depth 1, right under the workspace:\n{screen}"
         );
     }
@@ -551,11 +559,11 @@ mod tests {
 
         // ws=unknown "·", tab=working "●", panes=idle "○".
         assert!(
-            screen.contains("▼ ○ mothership (3)"),
+            screen.contains("▾ ○ mothership (3)"),
             "workspace pane count rides in the label:\n{screen}"
         );
-        assert!(screen.contains("  ▼ ⠋ main"), "indented tab:\n{screen}");
-        assert!(screen.contains("    ✓ claude"), "indented pane:\n{screen}");
+        assert!(screen.contains("  ├── ⠋ main"), "indented tab:\n{screen}");
+        assert!(screen.contains("│   ├── ✓ claude"), "pane on the rail:\n{screen}");
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let ws_row = buffer_lines(&terminal)
             .into_iter()
@@ -588,8 +596,8 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▼ o mothership"), "screen:\n{screen}");
-        assert!(screen.contains("▼ | main"), "screen:\n{screen}");
+        assert!(screen.contains("▾ o mothership"), "screen:\n{screen}");
+        assert!(screen.contains("├── | main"), "screen:\n{screen}");
         assert!(screen.contains("v claude"), "screen:\n{screen}");
     }
 
@@ -603,7 +611,7 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▼ mothership"), "no icon:\n{screen}");
+        assert!(screen.contains("▾ mothership"), "no icon:\n{screen}");
         assert!(!screen.contains("panes"), "no pane counts:\n{screen}");
         assert!(
             !screen.contains("mothership ("),

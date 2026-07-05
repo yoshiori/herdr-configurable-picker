@@ -74,6 +74,13 @@ pub struct Row {
     pub cwd: Option<String>,
     /// Pane rows: user/plugin-set status text; wins over the state name.
     pub custom_status: Option<String>,
+    /// True when this row is the last *visible* child of its parent —
+    /// tree-command style guides close it with `└──` instead of `├──`.
+    pub last_child: bool,
+    /// One entry per ancestor level between the workspace and this row
+    /// (deepest rows only): true when that ancestor still has visible
+    /// siblings below, i.e. the guide column needs a `│` continuation.
+    pub ancestor_continues: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -305,6 +312,8 @@ impl Tree {
                 ],
                 cwd: None,
                 custom_status: None,
+                last_child: false,
+                ancestor_continues: Vec::new(),
             });
             for (tab_idx, (tab, (tab_shown, pane_shown))) in
                 ws.tabs.iter().zip(&tab_states).enumerate()
@@ -339,6 +348,8 @@ impl Tree {
                         ],
                         cwd: None,
                         custom_status: None,
+                        last_child: false,
+                        ancestor_continues: Vec::new(),
                     });
                 }
                 for (pane_idx, pane) in tab.panes.iter().enumerate() {
@@ -395,10 +406,13 @@ impl Tree {
                         detail,
                         cwd: pane.info.cwd.clone(),
                         custom_status: pane.info.custom_status.clone(),
+                        last_child: false,
+                        ancestor_continues: Vec::new(),
                     });
                 }
             }
         }
+        annotate_guides(&mut rows);
         rows
     }
 
@@ -569,6 +583,38 @@ pub fn drop_own_overlay_pane(
     }
     for pane in panes.iter_mut() {
         pane.focused = pane.pane_id == context_pane_id;
+    }
+}
+
+/// Fills in tree-guide info over the flattened rows: whether each row is
+/// the last visible child of its parent (`└──` vs `├──`), and which
+/// ancestor levels still have siblings below (`│` continuation columns).
+fn annotate_guides(rows: &mut [Row]) {
+    for i in 0..rows.len() {
+        let depth = rows[i].depth;
+        if depth == 0 {
+            continue;
+        }
+        let mut last_child = true;
+        for row in &rows[i + 1..] {
+            if row.depth < depth {
+                break;
+            }
+            if row.depth == depth {
+                last_child = false;
+                break;
+            }
+        }
+        let ancestor_continues = (1..depth)
+            .map(|level| {
+                rows[i + 1..]
+                    .iter()
+                    .take_while(|row| row.depth >= level)
+                    .any(|row| row.depth == level)
+            })
+            .collect();
+        rows[i].last_child = last_child;
+        rows[i].ancestor_continues = ancestor_continues;
     }
 }
 
