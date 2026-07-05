@@ -1128,7 +1128,7 @@ mod tests {
         assert!(
             lines[2].contains("mothership"),
             "the list starts below the header rule: {:?}",
-            lines[1]
+            lines[2]
         );
     }
 
@@ -1242,7 +1242,7 @@ mod tests {
             screen.contains("pane 20"),
             "row under cursor must be scrolled into view:\n{screen}"
         );
-        // 12 rows minus the footer (2) -> 10; herdr owns the pane border.
+        // 12 rows minus the header (2) and footer (2) -> 8; herdr owns the pane border.
         assert_eq!(app.viewport_height, 8);
     }
 
@@ -1260,8 +1260,8 @@ mod tests {
         // herdr draws the pane chrome; our canvas starts with content.
         assert!(
             lines[2].contains("mothership"),
-            "no own border, first line is the list: {:?}",
-            lines[0]
+            "no own border, the list starts under the header rule: {:?}",
+            lines[2]
         );
 
         // The footer's top separator keeps the accent color.
