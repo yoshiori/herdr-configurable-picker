@@ -1,20 +1,19 @@
 # herdr-configurable-picker
 
-Tree-based goto picker for [herdr](https://herdr.dev), with **fully configurable keybindings**.
+Tree-based goto picker for [herdr](https://herdr.dev) with **Emacs-style movement** and **IME-safe keys** out of the box — and every single binding is yours to change.
 
 ## Motivation
 
-The built-in herdr goto (`prefix+g`, `Mode::Navigator` internally) has hard-coded navigation keys:
+The built-in herdr goto (`prefix+g`, `Mode::Navigator` internally) has hard-coded navigation keys, and that bites twice:
 
-- `j` / `k` / arrows for movement.
-- `Ctrl+n` / `Ctrl+p` only when the search field is focused.
-- No expand / collapse of the tree.
+- **No Emacs-style movement.** `ctrl+n` / `ctrl+p` only work while the search field is focused; the list itself is `j`/`k`/arrows only, and there is no way to change that.
+- **Not IME-safe.** With a Japanese (or any) IME active, bare letter keys get swallowed by the composer before they ever reach the picker.
 
-This plugin binds to a separate key and lets you rebind every action — `up`, `down`, `expand`, `collapse`, `accept`, `cancel`, `search`, and more — from a plugin-local config file.
+This plugin binds to a separate key and fixes both by default — `ctrl+n`/`ctrl+p` move anywhere, and every letter action has a `ctrl+` alias that passes through an IME untouched. And since the defaults are just a config file, you can rebind every action — `up`, `down`, `expand`, `collapse`, `accept`, `cancel`, `search`, the state filters, and more — chords like `g g` included.
 
 ## Status
 
-**v1.0.0 — stable.** Feature parity with the built-in goto, plus the parts it cannot do (rebindable keys, a real tree, direct pane jumps, git branches in the detail panel). See [CHANGELOG.md](./CHANGELOG.md) for history and [SPEC.md](./SPEC.md) for the full design.
+**v1.0.0 — stable.** Feature parity with the built-in goto, plus the parts it cannot do (Emacs-style movement everywhere, IME-safe keys, a real tree, direct pane jumps, git branches in the detail panel). See [CHANGELOG.md](./CHANGELOG.md) for history and [SPEC.md](./SPEC.md) for the full design.
 
 ```
 ┌ herdr-configurable-picker ────────────────────────────────────────┬────────────────────────┐
@@ -33,6 +32,9 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 
 ## Features
 
+- **Emacs-style movement everywhere**: `ctrl+n`/`ctrl+p` move, `ctrl+v` pages — in the list *and* inside the search prompt, not search-only like the built-in. (`j`/`k` and arrows work too.)
+- **IME-safe defaults**: every letter action has an alias that survives an active IME — `ctrl+b`/`ctrl+w`/`ctrl+d`/`ctrl+a` for the state filters, `ctrl+s` for search, `tab` for the idle filter (`ctrl+i` *is* tab to a terminal).
+- **All keys user-configurable**: multiple keys per action, chords like `g g`, everything in a plugin-local config file.
 - Tree of `workspace → tab → pane` with expand / collapse per branch (`initial_expansion` configurable) and tree-command style guide rails.
 - `/` search over labels *and* meta (agent names, states, pane counts) with multi-word AND — `/pick work` intersects; `ctrl+n`/`ctrl+p`/arrows/`enter` keep working inside the prompt.
 - State filters (`b`/`w`/`i`/`d`, rebindable): show only blocked / working / idle / done agents; `a` clears.
@@ -42,14 +44,15 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 - Status icons in three sets (`nerd` / `ascii` / `emoji`), status colors, `NO_COLOR` support, and `[display]` toggles for icons, pane counts, and cwd.
 - Agent icons in the meta column and detail panel (`󰚩 claude · idle`,  for plain shells; 🤖/🐚 with `icon_set = "emoji"`), toggleable via `show_agent_icon`.
 - No external runtime dependencies (single Rust binary; TUI via [`ratatui`](https://ratatui.rs/)).
-- All keys user-configurable, including chords like `g g`.
 - Talks directly to herdr's API socket — no subprocess per call.
 
 ## vs the built-in goto (`prefix+g`)
 
 | | built-in goto | this plugin |
 | --- | --- | --- |
-| Movement keys | hard-coded (`j`/`k`/arrows; `ctrl+n`/`ctrl+p` only while searching) | fully rebindable, multiple keys per action, chords |
+| Emacs-style movement | `ctrl+n`/`ctrl+p` while searching only | everywhere, by default |
+| IME safety | bare letters only — the IME eats them | `ctrl+` aliases on every action |
+| Movement keys | hard-coded | fully rebindable, multiple keys per action, chords |
 | Structure | workspace/tab list | workspace → tab → pane tree with expand/collapse |
 | Jump to a pane | via its tab | any pane directly (incl. agentless, via socket `pane.focus`) |
 | Search keys | fixed | rebindable (`search_start`/`search_clear`/`search_exit`) |
