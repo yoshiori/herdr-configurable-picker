@@ -1,8 +1,9 @@
-//! Resolves the herdr host theme's accent color so the picker blends in.
+//! Reads settings from the herdr host's own config.toml so the picker
+//! blends in: the theme accent and the `[ui] mouse_capture` toggle.
 //!
-//! herdr (as of 0.7.1) exposes no theme API or env var to plugins, so this
-//! mirrors the host's own resolution: read `[theme]` from the herdr
-//! config.toml, honor a `[theme.custom] accent` override, else look the
+//! herdr (as of 0.7.1) exposes no theme/settings API or env var to
+//! plugins, so this mirrors the host's own resolution. For the accent:
+//! read `[theme]`, honor a `[theme.custom] accent` override, else look the
 //! built-in palette's accent up by name (values lifted from herdr's
 //! `Palette::from_name` table).
 
@@ -10,17 +11,41 @@ use std::path::Path;
 
 use ratatui::style::Color;
 
-/// The host accent, best effort. `plugin_config_dir` is
+/// The host `config.toml` contents. `plugin_config_dir` is
 /// `$HERDR_PLUGIN_CONFIG_DIR` (= `<config_dir>/plugins/config/<id>`), from
 /// which the host `config.toml` is three levels up.
-pub fn host_accent(plugin_config_dir: &Path) -> Option<Color> {
+fn read_host_config(plugin_config_dir: &Path) -> Option<String> {
     let host_config = plugin_config_dir
         .parent()?
         .parent()?
         .parent()?
         .join("config.toml");
-    let text = std::fs::read_to_string(host_config).ok()?;
-    accent_from_config(&text)
+    std::fs::read_to_string(host_config).ok()
+}
+
+/// The host accent, best effort.
+pub fn host_accent(plugin_config_dir: &Path) -> Option<Color> {
+    accent_from_config(&read_host_config(plugin_config_dir)?)
+}
+
+/// The host's `[ui] mouse_capture`, best effort — None only when the host
+/// config cannot be read at all.
+pub fn host_mouse_capture(plugin_config_dir: &Path) -> Option<bool> {
+    Some(mouse_capture_from_config(&read_host_config(
+        plugin_config_dir,
+    )?))
+}
+
+/// `[ui] mouse_capture` with the host's own default (true) for anything
+/// missing or malformed.
+fn mouse_capture_from_config(config_toml: &str) -> bool {
+    let Ok(doc) = config_toml.parse::<toml::Value>() else {
+        return true;
+    };
+    doc.get("ui")
+        .and_then(|ui| ui.get("mouse_capture"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
 }
 
 fn accent_from_config(config_toml: &str) -> Option<Color> {
@@ -119,6 +144,39 @@ mod tests {
     fn unknown_theme_or_broken_config_yields_none() {
         assert_eq!(accent_from_config("[theme]\nname = \"my-theme\"\n"), None);
         assert_eq!(accent_from_config("not [ toml"), None);
+    }
+
+    #[test]
+    fn reads_the_host_mouse_capture_flag() {
+        assert!(!mouse_capture_from_config("[ui]\nmouse_capture = false\n"));
+        assert!(mouse_capture_from_config("[ui]\nmouse_capture = true\n"));
+        assert!(
+            mouse_capture_from_config("# nothing here\n"),
+            "the host default is on"
+        );
+        assert!(mouse_capture_from_config("not [ toml"));
+    }
+
+    #[test]
+    fn host_mouse_capture_walks_up_like_the_accent() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin_dir = root.path().join("plugins/config/some.plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[ui]\nmouse_capture = false\n",
+        )
+        .unwrap();
+
+        assert_eq!(host_mouse_capture(&plugin_dir), Some(false));
+        let elsewhere = tempfile::tempdir().unwrap();
+        let orphan = elsewhere.path().join("plugins/config/some.plugin");
+        std::fs::create_dir_all(&orphan).unwrap();
+        assert_eq!(
+            host_mouse_capture(&orphan),
+            None,
+            "no host config.toml at all"
+        );
     }
 
     #[test]

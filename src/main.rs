@@ -4,7 +4,7 @@
 mod app;
 mod config;
 mod herdr_client;
-mod host_theme;
+mod host_config;
 mod icons;
 mod keymap;
 mod search;
@@ -15,9 +15,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseEventKind};
 
-use app::{App, EnterOnBranch, Outcome};
+use app::{App, EnterOnBranch, MouseInput, Outcome};
 use herdr_client::{HerdrApi, SocketClient};
 use keymap::KeyPress;
 use tree::{FocusTarget, InitialExpansion, Tree};
@@ -77,7 +77,7 @@ fn main() -> ExitCode {
     // With accent = "auto", follow the herdr theme's accent (read from the
     // host config — 0.7.1 has no theme API for plugins).
     let host_accent = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
-        .and_then(|dir| host_theme::host_accent(Path::new(&dir)));
+        .and_then(|dir| host_config::host_accent(Path::new(&dir)));
     let (view, mut view_warnings) = ui::ViewOptions::from_config(
         &config.display,
         no_color,
@@ -85,6 +85,11 @@ fn main() -> ExitCode {
         host_accent,
     );
     warnings.append(&mut view_warnings);
+    // mouse = "auto" likewise follows the host's [ui] mouse_capture.
+    let host_mouse = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
+        .and_then(|dir| host_config::host_mouse_capture(Path::new(&dir)));
+    let (mouse, mouse_warning) = config.behavior.mouse.resolve(host_mouse);
+    warnings.extend(mouse_warning);
     report_warnings(&warnings);
 
     let mut client = match SocketClient::connect(Path::new(&socket_path)) {
@@ -108,9 +113,20 @@ fn main() -> ExitCode {
     // closest a snapshot client gets is refreshing about once a second.
     const REFRESH_EVERY_TICKS: u32 = 8;
     let mut terminal = ratatui::init();
+    if mouse {
+        // ratatui::init() does not enable mouse reporting; failure here
+        // just means keyboard-only, not a broken picker.
+        let _ = crossterm::execute!(std::io::stdout(), event::EnableMouseCapture);
+    }
+    let restore = |mouse: bool| {
+        if mouse {
+            let _ = crossterm::execute!(std::io::stdout(), event::DisableMouseCapture);
+        }
+        ratatui::restore();
+    };
     let selection = loop {
         if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app, &hints, &view)) {
-            ratatui::restore();
+            restore(mouse);
             return fail_visibly(&format!("failed to draw: {e}"));
         }
         match event::poll(SPINNER_INTERVAL) {
@@ -140,12 +156,34 @@ fn main() -> ExitCode {
                     }
                 }
             }
+            Ok(Event::Mouse(mouse_event)) if mouse => {
+                let input = match mouse_event.kind {
+                    MouseEventKind::Moved => Some(MouseInput::Move {
+                        x: mouse_event.column,
+                        y: mouse_event.row,
+                    }),
+                    MouseEventKind::Down(event::MouseButton::Left) => Some(MouseInput::Click {
+                        x: mouse_event.column,
+                        y: mouse_event.row,
+                    }),
+                    MouseEventKind::ScrollUp => Some(MouseInput::ScrollUp),
+                    MouseEventKind::ScrollDown => Some(MouseInput::ScrollDown),
+                    _ => None,
+                };
+                if let Some(input) = input {
+                    match app.handle_mouse(input) {
+                        Outcome::Continue => {}
+                        Outcome::Cancel => break None,
+                        Outcome::Focus(target) => break Some(target),
+                    }
+                }
+            }
             // Resize just needs the next draw; other events are ignored.
             Ok(_) => {}
             Err(_) => break None,
         }
     };
-    ratatui::restore();
+    restore(mouse);
 
     if let Some(target) = selection {
         let focused = match &target {

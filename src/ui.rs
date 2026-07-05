@@ -213,6 +213,9 @@ fn contrast_fg(background: Color) -> Color {
 /// splitting off; below it the list gets the whole canvas.
 const DETAIL_MIN_TOTAL_WIDTH: u16 = 60;
 
+/// Room for the right-aligned "N panes " header counter.
+const COUNT_WIDTH: u16 = 12;
+
 pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOptions) {
     // No frame of our own: herdr already draws pane chrome (border + the
     // manifest pane title) around this canvas, and a second box inside it
@@ -242,18 +245,31 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
             .border_style(border_style);
         let header_inner = header_block.inner(header_area);
         frame.render_widget(header_block, header_area);
+        // A click on this line focuses the search, like the built-in.
+        app.prompt_row = header_inner.y;
         let [prompt_area, count_area] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).areas(header_inner);
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(COUNT_WIDTH)])
+                .areas(header_inner);
         if let Some(status) = app.state_filter {
-            // Active state filter (b/w/i/d): show which one.
+            // Active state filter (b/w/i/d): "/ {icon} {name}" — the
+            // built-in's chip, with the state's own icon (the spinner for
+            // working) in the state color.
             let style = match status_color(status) {
                 Some(color) if view.color => Style::new().fg(color),
                 _ => Style::new(),
             };
-            let spans = vec![
-                Span::styled(" ⊙ ", dim_style(view)),
-                Span::styled(status.name(), style.add_modifier(Modifier::BOLD)),
-            ];
+            let mut spans = vec![Span::styled(" / ", dim_style(view))];
+            if let Some(set) = &view.icon_set {
+                spans.push(Span::styled(
+                    set.icon(status, app.tick),
+                    style.add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                status.name(),
+                style.add_modifier(Modifier::BOLD),
+            ));
             frame.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
         } else {
             // The trailing bar marks the prompt as focused (typing goes
@@ -276,7 +292,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
             }
             frame.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
         }
-        let count = Paragraph::new(format!("{} ", app.rows().len()))
+        // The built-in shows the total pane count here, not the number of
+        // visible rows — it stays put while filters narrow the list.
+        let count = Paragraph::new(format!("{} panes ", app.pane_count()))
             .style(dim_style(view))
             .alignment(ratatui::layout::Alignment::Right);
         frame.render_widget(count, count_area);
@@ -292,6 +310,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         (main_area, None)
     };
     app.viewport_height = list_area.height;
+    app.list_rect = (list_area.x, list_area.y, list_area.width, list_area.height);
 
     if app.rows().is_empty() {
         let placeholder = if app.query.is_empty() && app.state_filter.is_none() {
@@ -319,6 +338,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         let list = List::new(items).highlight_style(highlight);
         let mut state = ListState::default().with_selected(Some(app.cursor));
         frame.render_stateful_widget(list, list_area, &mut state);
+        // The offset ratatui actually used — mouse hit-testing needs it.
+        app.list_offset = state.offset();
+        render_scrollbar(frame, list_area, app.rows().len(), app.list_offset, view);
     }
 
     if let Some(detail_area) = detail_area {
@@ -342,6 +364,63 @@ fn status_color(status: AgentStatus) -> Option<Color> {
         AgentStatus::Blocked => Some(Color::Red),
         AgentStatus::Done => Some(Color::Cyan),
         AgentStatus::Unknown => Some(Color::DarkGray),
+    }
+}
+
+/// Thumb geometry for a proportional scrollbar: `(top, len)` cells within
+/// a `track`-tall track, or None when everything already fits.
+fn scrollbar_thumb(
+    total: usize,
+    viewport: usize,
+    offset: usize,
+    track: usize,
+) -> Option<(usize, usize)> {
+    if total <= viewport || track == 0 {
+        return None;
+    }
+    let len = (((viewport * track) as f32 / total as f32).round() as usize).clamp(1, track);
+    let max_top = track - len;
+    let max_offset = total - viewport;
+    let top = (((offset.min(max_offset) * max_top) as f32 / max_offset as f32).round() as usize)
+        .min(max_top);
+    Some((top, len))
+}
+
+/// The built-in navigator's scrollbar: a `▕` column overdrawn on the
+/// list's right edge, dim track with the thumb standing out. Only appears
+/// when the rows overflow the viewport.
+fn render_scrollbar(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    total: usize,
+    offset: usize,
+    view: &ViewOptions,
+) {
+    if area.width == 0 {
+        return;
+    }
+    let Some((top, len)) =
+        scrollbar_thumb(total, area.height as usize, offset, area.height as usize)
+    else {
+        return;
+    };
+    let thumb = if view.color {
+        Style::new().fg(view.accent)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    let x = area.x + area.width - 1;
+    let buf = frame.buffer_mut();
+    for (i, y) in (area.y..area.y + area.height).enumerate() {
+        let cell = &mut buf[(x, y)];
+        cell.set_symbol("▕");
+        // Patch fg only: the selected row's background continues under
+        // the bar, exactly like the built-in's.
+        cell.set_style(if i >= top && i < top + len {
+            thumb
+        } else {
+            dim_style(view)
+        });
     }
 }
 
@@ -1039,15 +1118,40 @@ mod tests {
             "header: {:?}",
             lines[0]
         );
+        // The count is the total pane count, like the built-in — not the
+        // number of visible rows.
         assert!(
-            lines[0].trim_end().ends_with(&app.rows().len().to_string()),
+            lines[0].trim_end().ends_with("3 panes"),
             "count at the right edge: {:?}",
             lines[0]
         );
         assert!(
             lines[2].contains("mothership"),
             "the list starts below the header rule: {:?}",
-            lines[1]
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn pane_count_in_the_header_ignores_active_filters() {
+        use crate::keymap::{parse_key_spec, Keymaps};
+        let keys = KeysConfig::default();
+        let (normal, _) = Keymap::from_bindings(&keys.to_bindings());
+        let (search, _) = Keymap::from_bindings(&keys.to_search_bindings());
+        let keymaps = Keymaps { normal, search };
+
+        let mut app = sample_app();
+        for spec in ["/", "z", "z"] {
+            let key = parse_key_spec(spec).unwrap().0[0];
+            app.handle_key(&keymaps, key);
+        }
+        assert!(app.rows().is_empty());
+        let terminal = render(80, 24, &mut app);
+        let lines = buffer_lines(&terminal);
+        assert!(
+            lines[0].trim_end().ends_with("3 panes"),
+            "the total stays put under a filter: {:?}",
+            lines[0]
         );
     }
 
@@ -1138,7 +1242,7 @@ mod tests {
             screen.contains("pane 20"),
             "row under cursor must be scrolled into view:\n{screen}"
         );
-        // 12 rows minus the footer (2) -> 10; herdr owns the pane border.
+        // 12 rows minus the header (2) and footer (2) -> 8; herdr owns the pane border.
         assert_eq!(app.viewport_height, 8);
     }
 
@@ -1156,8 +1260,8 @@ mod tests {
         // herdr draws the pane chrome; our canvas starts with content.
         assert!(
             lines[2].contains("mothership"),
-            "no own border, first line is the list: {:?}",
-            lines[0]
+            "no own border, the list starts under the header rule: {:?}",
+            lines[2]
         );
 
         // The footer's top separator keeps the accent color.
@@ -1236,27 +1340,63 @@ mod tests {
         let terminal = render(80, 24, &mut app);
         let screen = screen(&terminal);
 
-        assert!(screen.contains("⊙ working"), "filter line:\n{screen}");
+        // The chip carries the state's own icon, like the built-in's
+        // push_state_chip — for working that is the spinner (tick 0).
+        assert!(screen.contains("⠋ working"), "filter line:\n{screen}");
         let lines = buffer_lines(&terminal);
         assert!(
-            lines[0].trim_end().ends_with(&app.rows().len().to_string()),
-            "match count at the right edge: {:?}",
+            lines[0].trim_end().ends_with("3 panes"),
+            "pane total at the right edge: {:?}",
             lines[0]
         );
     }
 
     #[test]
-    fn search_line_shows_the_match_count() {
+    fn search_line_keeps_the_pane_total() {
         let mut app = sample_app();
         app.mode = Mode::Search;
         app.query = "x".to_string();
         let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
         assert!(
-            lines[0].trim_end().ends_with(&app.rows().len().to_string()),
+            lines[0].trim_end().ends_with("3 panes"),
             "count next to the prompt: {:?}",
             lines[0]
         );
+    }
+
+    #[test]
+    fn overflowing_list_grows_a_scrollbar_on_the_right_edge() {
+        let mut app = sample_app(); // 6 rows
+                                    // 8 rows tall: 2 header + 2 footer leave a 4-row list viewport,
+                                    // and 50 wide keeps the detail panel away from the right edge.
+        let terminal = render(50, 8, &mut app);
+        let lines = buffer_lines(&terminal);
+        for (y, line) in lines.iter().enumerate().take(6).skip(2) {
+            assert!(
+                line.ends_with('▕'),
+                "scrollbar in the last column of line {y}: {line:?}"
+            );
+        }
+
+        // Roomy viewport: no scrollbar.
+        let terminal = render(50, 24, &mut app);
+        let lines = buffer_lines(&terminal);
+        assert!(
+            !lines[2].ends_with('▕'),
+            "no scrollbar when everything fits: {:?}",
+            lines[2]
+        );
+    }
+
+    #[test]
+    fn draw_records_the_layout_for_mouse_hit_testing() {
+        let mut app = sample_app();
+        let _ = render(80, 24, &mut app);
+        assert_eq!(app.prompt_row, 0, "prompt on the first line");
+        assert_eq!(app.list_rect.1, 2, "list starts under the header rule");
+        assert_eq!(app.list_rect.3, app.viewport_height);
+        assert_eq!(app.list_offset, 0, "six rows fit without scrolling");
     }
 
     #[test]

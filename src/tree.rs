@@ -129,6 +129,16 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Total pane count across all workspaces, for the header — the
+    /// built-in counts every pane there, regardless of active filters.
+    pub fn pane_count(&self) -> usize {
+        self.workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .map(|tab| tab.panes.len())
+            .sum()
+    }
+
     /// Joins the snapshot, sorting workspaces and tabs by their numbers and
     /// keeping panes in API order within each tab.
     pub fn build(
@@ -319,19 +329,24 @@ impl Tree {
                             .collect(),
                     ),
                     RowFilter::Text(_) => {
+                        // A tab that matches on its own shows all of its
+                        // panes, like the built-in (navigator_child_rows:
+                        // `Text if tab_matches => pane_rows`).
+                        let tab_matches =
+                            !single_tab && crate::search::lowered_query_matches(tab_search, query);
                         let pane_shown: Vec<bool> = tab
                             .panes
                             .iter()
                             .map(|pane| {
-                                crate::search::lowered_query_matches(
-                                    &pane_search_text(&pane.info),
-                                    query,
-                                )
+                                tab_matches
+                                    || crate::search::lowered_query_matches(
+                                        &pane_search_text(&pane.info),
+                                        query,
+                                    )
                             })
                             .collect();
-                        let tab_shown = !single_tab
-                            && (crate::search::lowered_query_matches(tab_search, query)
-                                || pane_shown.iter().any(|&shown| shown));
+                        let tab_shown =
+                            tab_matches || (!single_tab && pane_shown.iter().any(|&shown| shown));
                         (tab_shown, pane_shown)
                     }
                     RowFilter::State(status) => {
@@ -870,11 +885,10 @@ mod tests {
         assert!(tree.visible_rows_filtered("b-one").is_empty());
         // A pane match still reveals the chain: workspace -> pane. With
         // meta included in search (like the built-in), "pane 1" also hits
-        // a-two's "1 panes" meta — as a tab match it does not reveal its
-        // children.
+        // a-two's "1 panes" meta — and a tab match reveals its panes.
         assert_eq!(
             labels(&tree.visible_rows_filtered("pane 1")),
-            vec!["alpha", "a-two", "beta", "pane 1"]
+            vec!["alpha", "a-two", "pane 3", "beta", "pane 1"]
         );
     }
 
@@ -1121,8 +1135,10 @@ mod tests {
         // Collapsed everywhere: the filter must reveal matches regardless.
         let tree = fixture(InitialExpansion::None);
 
+        // A matching tab reveals all of its panes, like the built-in
+        // (navigator_child_rows: `Text if tab_matches => pane_rows`).
         let rows = tree.visible_rows_filtered("two");
-        assert_eq!(labels(&rows), vec!["alpha", "a-two"]);
+        assert_eq!(labels(&rows), vec!["alpha", "a-two", "pane 3"]);
         assert_eq!(rows[0].kind, RowKind::Workspace);
         assert!(rows[0].expanded, "ancestor renders as expanded");
 

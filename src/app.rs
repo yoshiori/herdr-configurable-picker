@@ -41,6 +41,22 @@ pub enum Mode {
     Search,
 }
 
+/// Mouse events, translated from crossterm by the event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseInput {
+    Move { x: u16, y: u16 },
+    Click { x: u16, y: u16 },
+    ScrollUp,
+    ScrollDown,
+}
+
+/// Rows the mouse wheel moves per notch, like the built-in.
+const WHEEL_STEP: usize = 3;
+
+/// Columns from the list's left edge that count as the expand/collapse
+/// caret when clicking a branch row (the built-in's navigator_row_caret_at).
+const CARET_ZONE: u16 = 3;
+
 #[derive(Debug)]
 pub struct App {
     tree: Tree,
@@ -64,6 +80,14 @@ pub struct App {
     /// True when the snapshot itself had nothing to show (as opposed to a
     /// filter that currently matches nothing).
     tree_is_empty: bool,
+    /// Screen y of the search prompt line as of the last draw; a click
+    /// there focuses the search, like the built-in.
+    pub prompt_row: u16,
+    /// The list's screen rectangle `(x, y, w, h)` as of the last draw,
+    /// for mouse hit-testing.
+    pub list_rect: (u16, u16, u16, u16),
+    /// Index of the first visible row as of the last draw.
+    pub list_offset: usize,
 }
 
 impl App {
@@ -83,11 +107,19 @@ impl App {
             query: String::new(),
             state_filter: None,
             tree_is_empty,
+            prompt_row: 0,
+            list_rect: (0, 0, 0, 0),
+            list_offset: 0,
         }
     }
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Total pane count for the header, unaffected by filters.
+    pub fn pane_count(&self) -> usize {
+        self.tree.pane_count()
     }
 
     /// Swaps in a freshly fetched snapshot (the built-in recomputes its
@@ -117,6 +149,58 @@ impl App {
             Mode::Normal => self.handle_normal_key(keymaps, key),
             Mode::Search => self.handle_search_key(keymaps, key),
         }
+    }
+
+    /// Mouse semantics lifted from the built-in: hover follows, a click
+    /// selects and accepts (or toggles, on a branch row's caret), the
+    /// prompt line focuses search, and the wheel moves three rows.
+    pub fn handle_mouse(&mut self, input: MouseInput) -> Outcome {
+        if self.tree_is_empty {
+            // Same as any key on an empty tree: close.
+            return Outcome::Cancel;
+        }
+        match input {
+            MouseInput::Move { x, y } => {
+                if let Some(idx) = self.row_at(x, y) {
+                    self.cursor = idx;
+                }
+                Outcome::Continue
+            }
+            MouseInput::Click { x, y } => {
+                if y == self.prompt_row {
+                    return self.apply(Action::SearchStart);
+                }
+                let Some(idx) = self.row_at(x, y) else {
+                    return Outcome::Continue;
+                };
+                self.cursor = idx;
+                let is_branch = self.rows[idx].kind != RowKind::Pane;
+                if is_branch && x <= self.list_rect.0.saturating_add(CARET_ZONE) {
+                    return self.apply(Action::Toggle);
+                }
+                self.apply(Action::Accept)
+            }
+            MouseInput::ScrollUp => {
+                self.cursor = self.cursor.saturating_sub(WHEEL_STEP);
+                Outcome::Continue
+            }
+            MouseInput::ScrollDown => {
+                if !self.rows.is_empty() {
+                    self.cursor = (self.cursor + WHEEL_STEP).min(self.rows.len() - 1);
+                }
+                Outcome::Continue
+            }
+        }
+    }
+
+    /// The row index under screen position `(x, y)`, if any.
+    fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let (rx, ry, rw, rh) = self.list_rect;
+        if x < rx || x >= rx.saturating_add(rw) || y < ry || y >= ry.saturating_add(rh) {
+            return None;
+        }
+        let idx = self.list_offset + (y - ry) as usize;
+        (idx < self.rows.len()).then_some(idx)
     }
 
     fn handle_normal_key(&mut self, keymaps: &Keymaps, key: KeyPress) -> Outcome {
@@ -187,7 +271,15 @@ impl App {
         // shows nothing — otherwise an empty result would trap the user
         // with cancel as the only way out.
         match action {
-            Action::Cancel => return Outcome::Cancel,
+            Action::Cancel => {
+                // Two-stage, like the built-in: a leftover query or state
+                // filter is cleared first; only a clean esc closes.
+                if self.query.is_empty() && self.state_filter.is_none() {
+                    return Outcome::Cancel;
+                }
+                self.clear_filters();
+                return Outcome::Continue;
+            }
             Action::SearchStart => {
                 // Text search and state filter are mutually exclusive.
                 self.state_filter = None;
@@ -212,13 +304,7 @@ impl App {
                 return Outcome::Continue;
             }
             Action::FilterClear => {
-                self.state_filter = None;
-                self.refresh_rows();
-                self.cursor = self
-                    .rows
-                    .iter()
-                    .rposition(|row| row.is_current)
-                    .unwrap_or(0);
+                self.clear_filters();
                 return Outcome::Continue;
             }
             // Bound only in the search table; nothing to do in normal mode.
@@ -230,7 +316,8 @@ impl App {
             return Outcome::Continue;
         }
         let last = self.rows.len() - 1;
-        let page = (self.viewport_height as usize).max(1);
+        // Half a viewport per page, like the built-in's ctrl+d/ctrl+u.
+        let page = (self.viewport_height as usize / 2).max(1);
         let row = self.rows[self.cursor].clone();
         match action {
             Action::Down => self.cursor = (self.cursor + 1).min(last),
@@ -279,6 +366,20 @@ impl App {
             | Action::SearchExit => unreachable!("handled before the row-dependent actions"),
         }
         Outcome::Continue
+    }
+
+    /// Drops both the text query and the state filter (they are mutually
+    /// exclusive, but a leftover query survives leaving search mode) and
+    /// parks the cursor back on the current node.
+    fn clear_filters(&mut self) {
+        self.query.clear();
+        self.state_filter = None;
+        self.refresh_rows();
+        self.cursor = self
+            .rows
+            .iter()
+            .rposition(|row| row.is_current)
+            .unwrap_or(0);
     }
 
     fn set_state_filter(&mut self, status: AgentStatus) {
@@ -460,8 +561,12 @@ mod tests {
         assert_eq!(app.cursor, 6, "bottom hits the last visible row");
         press(&mut app, &keymaps, "down");
         assert_eq!(app.cursor, 6, "down clamps at the bottom");
+        // Half a viewport per page, like the built-in's ctrl+d/ctrl+u.
+        app.viewport_height = 4;
         press(&mut app, &keymaps, "ctrl+u");
-        assert_eq!(app.cursor, 3, "page up moves by viewport height");
+        assert_eq!(app.cursor, 4, "page up moves by half the viewport");
+        press(&mut app, &keymaps, "ctrl+d");
+        assert_eq!(app.cursor, 6, "page down moves by half the viewport");
     }
 
     #[test]
@@ -592,7 +697,11 @@ mod tests {
         type_text(&mut app, &keymaps, "two");
         assert_eq!(app.query, "two");
         let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["alpha", "a-two"]);
+        assert_eq!(
+            labels,
+            vec!["alpha", "a-two", "pane 2"],
+            "tab match reveals its panes"
+        );
         assert_eq!(cursor_label(&app), "a-two", "cursor lands on the match");
     }
 
@@ -617,7 +726,7 @@ mod tests {
         assert!(app.rows().is_empty());
         press(&mut app, &keymaps, "backspace");
         assert_eq!(app.query, "two");
-        assert_eq!(app.rows().len(), 2, "backspace re-widens the filter");
+        assert_eq!(app.rows().len(), 3, "backspace re-widens the filter");
 
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(app.query, "");
@@ -626,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_exits_search_keeping_the_filter_then_cancels() {
+    fn esc_exits_search_then_clears_the_filter_then_cancels() {
         let keymaps = default_keymaps();
         let mut app = app();
 
@@ -635,9 +744,31 @@ mod tests {
         assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Continue);
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.query, "two", "filter survives exiting the prompt");
-        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows().len(), 3);
 
+        // Like the built-in: esc with a leftover filter clears it first...
+        assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Continue);
+        assert_eq!(app.query, "");
+        assert_eq!(app.rows().len(), 7, "full tree restored");
+
+        // ...and only a clean esc closes the picker.
         assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Cancel);
+    }
+
+    #[test]
+    fn filter_clear_also_drops_a_leftover_query() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        press(&mut app, &keymaps, "/");
+        type_text(&mut app, &keymaps, "two");
+        press(&mut app, &keymaps, "esc");
+        assert_eq!(app.query, "two");
+
+        // The built-in's `a` clears the query as well as the state filter.
+        press(&mut app, &keymaps, "a");
+        assert_eq!(app.query, "");
+        assert_eq!(app.rows().len(), 7);
     }
 
     #[test]
@@ -683,7 +814,11 @@ mod tests {
 
         press(&mut app, &keymaps, "/");
         type_text(&mut app, &keymaps, "two");
-        assert_eq!(app.rows().len(), 2, "filter reveals the match");
+        assert_eq!(
+            app.rows().len(),
+            3,
+            "filter reveals the match and its panes"
+        );
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(
             app.rows().len(),
@@ -752,11 +887,15 @@ mod tests {
 
         press(&mut app, &keymaps, "/");
         type_text(&mut app, &keymaps, "two");
-        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows().len(), 3);
 
         app.replace_tree(tree(InitialExpansion::All));
         let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["alpha", "a-two"], "filter survives refresh");
+        assert_eq!(
+            labels,
+            vec!["alpha", "a-two", "pane 2"],
+            "filter survives refresh"
+        );
         assert_eq!(app.query, "two");
     }
 
@@ -804,9 +943,111 @@ mod tests {
     }
 
     #[test]
+    fn esc_and_backspace_clear_the_state_filter_before_closing() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        press(&mut app, &keymaps, "b");
+        assert_eq!(app.state_filter, Some(AgentStatus::Blocked));
+
+        // Backspace drops the state filter, like the built-in.
+        press(&mut app, &keymaps, "backspace");
+        assert_eq!(app.state_filter, None);
+        assert_eq!(app.rows().len(), 7);
+
+        // Esc with an active filter clears it instead of closing.
+        press(&mut app, &keymaps, "w");
+        assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Continue);
+        assert_eq!(app.state_filter, None);
+        assert_eq!(app.rows().len(), 7);
+
+        assert_eq!(press(&mut app, &keymaps, "esc"), Outcome::Cancel);
+    }
+
+    #[test]
     fn enter_on_branch_parses_known_values_only() {
         assert_eq!(EnterOnBranch::parse("jump"), Some(EnterOnBranch::Jump));
         assert_eq!(EnterOnBranch::parse("expand"), Some(EnterOnBranch::Expand));
         assert_eq!(EnterOnBranch::parse("teleport"), None);
+    }
+
+    /// The list as drawn: rows at y 2..12, prompt line at y 0.
+    fn app_with_layout() -> App {
+        let mut app = app();
+        app.prompt_row = 0;
+        app.list_rect = (0, 2, 40, 10);
+        app.list_offset = 0;
+        app
+    }
+
+    #[test]
+    fn hover_moves_the_cursor_over_rows_only() {
+        let mut app = app_with_layout();
+
+        assert_eq!(
+            app.handle_mouse(MouseInput::Move { x: 5, y: 5 }),
+            Outcome::Continue
+        );
+        assert_eq!(cursor_label(&app), "a-two", "row 3 sits at y 5");
+
+        app.handle_mouse(MouseInput::Move { x: 5, y: 9 });
+        assert_eq!(cursor_label(&app), "a-two", "y 9 is past the last row");
+        app.handle_mouse(MouseInput::Move { x: 41, y: 5 });
+        assert_eq!(cursor_label(&app), "a-two", "outside the list, no move");
+    }
+
+    #[test]
+    fn click_selects_and_accepts_a_row() {
+        let mut app = app_with_layout();
+
+        let outcome = app.handle_mouse(MouseInput::Click { x: 10, y: 4 });
+        assert_eq!(cursor_label(&app), "pane 1");
+        assert!(
+            matches!(outcome, Outcome::Focus(FocusTarget::Pane { .. })),
+            "click = select + accept, like the built-in: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn click_on_a_branch_caret_toggles_instead_of_jumping() {
+        let mut app = app_with_layout();
+
+        // The caret zone is the first four columns, like the built-in.
+        let outcome = app.handle_mouse(MouseInput::Click { x: 1, y: 2 });
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(cursor_label(&app), "alpha");
+        assert_eq!(app.rows().len(), 3, "alpha collapsed");
+
+        // Clicking the label part of a branch row accepts it.
+        let outcome = app.handle_mouse(MouseInput::Click { x: 10, y: 2 });
+        assert!(
+            matches!(outcome, Outcome::Focus(FocusTarget::Workspace(_))),
+            "label click jumps: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn click_on_the_prompt_row_enters_search() {
+        let mut app = app_with_layout();
+
+        assert_eq!(
+            app.handle_mouse(MouseInput::Click { x: 3, y: 0 }),
+            Outcome::Continue
+        );
+        assert_eq!(app.mode, Mode::Search);
+    }
+
+    #[test]
+    fn wheel_scrolls_the_cursor_three_rows_at_a_time() {
+        let mut app = app_with_layout();
+        app.cursor = 0;
+
+        app.handle_mouse(MouseInput::ScrollDown);
+        assert_eq!(app.cursor, 3);
+        app.handle_mouse(MouseInput::ScrollDown);
+        app.handle_mouse(MouseInput::ScrollDown);
+        assert_eq!(app.cursor, 6, "clamped at the last row");
+        app.handle_mouse(MouseInput::ScrollUp);
+        assert_eq!(app.cursor, 3);
     }
 }
