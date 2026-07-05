@@ -14,18 +14,29 @@ const SHORT_HASH_LEN: usize = 7;
 /// `foreground_cwd` (where a `cd`-ed agent actually runs) over the shell's
 /// `cwd`; workspaces resolve at their worktree checkout, when they have one.
 pub fn annotate(workspaces: &mut [WorkspaceInfo], panes: &mut [PaneInfo]) {
+    // Split panes usually share a directory; resolve each one once per
+    // snapshot. Owned keys: borrowed ones cannot outlive their pane's
+    // loop iteration.
+    let mut cache: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut resolve = |dir: &str| {
+        cache
+            .entry(dir.to_string())
+            .or_insert_with(|| branch_for(Path::new(dir)))
+            .clone()
+    };
     for pane in panes {
         pane.branch = pane
             .foreground_cwd
             .as_deref()
             .or(pane.cwd.as_deref())
-            .and_then(|cwd| branch_for(Path::new(cwd)));
+            .and_then(&mut resolve);
     }
     for ws in workspaces {
         ws.branch = ws
             .worktree
             .as_ref()
-            .and_then(|wt| branch_for(Path::new(&wt.checkout_path)));
+            .and_then(|wt| resolve(&wt.checkout_path));
     }
 }
 
