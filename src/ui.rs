@@ -563,7 +563,10 @@ mod tests {
             "workspace pane count rides in the label:\n{screen}"
         );
         assert!(screen.contains("  ├── ⠋ main"), "indented tab:\n{screen}");
-        assert!(screen.contains("│   ├── ✓ claude"), "pane on the rail:\n{screen}");
+        assert!(
+            screen.contains("│   ├── ✓ claude"),
+            "pane on the rail:\n{screen}"
+        );
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
         let ws_row = buffer_lines(&terminal)
             .into_iter()

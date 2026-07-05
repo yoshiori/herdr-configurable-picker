@@ -204,7 +204,7 @@ struct Pane      { id, tab_id, workspace_id, agent: Option<String>,
                    agent_status, cwd, focused: bool, terminal_id }
 ```
 
-- **Snapshot semantics**: fetched once when the picker opens. No live subscription. Reopen for a fresh view.
+- **Refresh semantics**: fetched on open and re-fetched about once a second while the picker is open (no event subscription — three cheap list calls per refresh). The built-in recomputes its rows from live state every frame; polling is the snapshot-client equivalent. A refresh preserves the cursor's node, the user's expand/collapse choices, and the active search filter; statuses, labels, and appearing/disappearing panes update in place. A failed refresh keeps the last good snapshot and retries on the next interval.
 
 ## Focus / jump behavior
 

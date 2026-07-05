@@ -177,6 +177,31 @@ impl Tree {
         tree
     }
 
+    /// Carries the user's expand/collapse choices over to a freshly
+    /// fetched tree (matched by workspace/tab id). Nodes that are new to
+    /// this snapshot keep whatever the initial expansion gave them.
+    pub fn adopt_expansion_from(&mut self, previous: &Tree) {
+        for ws in &mut self.workspaces {
+            let Some(prev_ws) = previous
+                .workspaces
+                .iter()
+                .find(|prev| prev.workspace_id == ws.workspace_id)
+            else {
+                continue;
+            };
+            ws.expanded = prev_ws.expanded;
+            for tab in &mut ws.tabs {
+                if let Some(prev_tab) = prev_ws
+                    .tabs
+                    .iter()
+                    .find(|prev| prev.info.tab_id == tab.info.tab_id)
+                {
+                    tab.expanded = prev_tab.expanded;
+                }
+            }
+        }
+    }
+
     fn apply_initial_expansion(&mut self, initial: InitialExpansion) {
         for ws in &mut self.workspaces {
             let ws_focused = ws.info.as_ref().is_some_and(|i| i.focused);

@@ -85,6 +85,24 @@ impl App {
         &self.rows
     }
 
+    /// Swaps in a freshly fetched snapshot (the built-in recomputes its
+    /// rows from live state every frame; polling is our equivalent).
+    /// Preserves the user's expansion choices, the node under the cursor,
+    /// and the active search filter.
+    pub fn replace_tree(&mut self, mut tree: Tree) {
+        tree.adopt_expansion_from(&self.tree);
+        let cursor_target = self
+            .rows
+            .get(self.cursor)
+            .map(|row| row.focus_target.clone());
+        self.tree = tree;
+        self.tree_is_empty = self.tree.visible_rows().is_empty();
+        self.rows = self.tree.visible_rows_filtered(&self.query);
+        self.cursor = cursor_target
+            .and_then(|target| self.rows.iter().position(|row| row.focus_target == target))
+            .unwrap_or_else(|| self.cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
     pub fn handle_key(&mut self, keymaps: &Keymaps, key: KeyPress) -> Outcome {
         if self.tree_is_empty {
             // SPEC "Empty tree": show the message, close on any key.
@@ -598,6 +616,74 @@ mod tests {
             2,
             "clearing goes back to the collapsed view (alpha, beta)"
         );
+    }
+
+    #[test]
+    fn replace_tree_updates_data_but_keeps_cursor_expansion_and_filter() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        // Park the cursor on "a-two" and collapse it.
+        press(&mut app, &keymaps, "home");
+        for _ in 0..3 {
+            press(&mut app, &keymaps, "j");
+        }
+        assert_eq!(cursor_label(&app), "a-two");
+        press(&mut app, &keymaps, "h");
+        assert_eq!(app.rows().len(), 6, "pane 2 hidden under collapsed a-two");
+
+        // Fresh snapshot: same session, but beta's pane got an agent and
+        // started working.
+        let mut beta_pane = pane("w2:p1", "w2:t1", "w2", false);
+        beta_pane.agent = Some("claude".to_string());
+        beta_pane.agent_status = AgentStatus::Working;
+        let refreshed = Tree::build(
+            vec![
+                workspace("w1", 1, "alpha", true),
+                workspace("w2", 2, "beta", false),
+            ],
+            vec![
+                tab("w1:t1", "w1", 1, "a-one", true),
+                tab("w1:t2", "w1", 2, "a-two", false),
+                tab("w2:t1", "w2", 1, "b-one", true),
+            ],
+            vec![
+                pane("w1:p1", "w1:t1", "w1", true),
+                pane("w1:p2", "w1:t2", "w1", false),
+                beta_pane,
+            ],
+            InitialExpansion::All,
+        );
+        app.replace_tree(refreshed);
+
+        assert_eq!(cursor_label(&app), "a-two", "cursor stays on its node");
+        assert_eq!(
+            app.rows().len(),
+            6,
+            "user's collapse of a-two survives the refresh"
+        );
+        let beta_row = app.rows().last().unwrap();
+        assert_eq!(beta_row.label, "claude", "refreshed label");
+        assert_eq!(
+            beta_row.agent_status,
+            AgentStatus::Working,
+            "refreshed status"
+        );
+    }
+
+    #[test]
+    fn replace_tree_reapplies_the_search_filter() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        press(&mut app, &keymaps, "/");
+        type_text(&mut app, &keymaps, "two");
+        assert_eq!(app.rows().len(), 2);
+
+        app.replace_tree(tree(InitialExpansion::All));
+        let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["alpha", "a-two"], "filter survives refresh");
+        assert_eq!(app.query, "two");
     }
 
     #[test]
