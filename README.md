@@ -15,20 +15,7 @@ This plugin binds to a separate key and fixes both by default — `ctrl+n`/`ctrl
 
 **v1.0.0 — stable.** Feature parity with the built-in goto, plus the parts it cannot do (Emacs-style movement everywhere, IME-safe keys, a real tree, direct pane jumps, git branches in the detail panel). See [CHANGELOG.md](./CHANGELOG.md) for history and [SPEC.md](./SPEC.md) for the full design.
 
-```
-┌ herdr-configurable-picker ────────────────────────────────────────┬────────────────────────┐
-│  ▼ · picker                                               3 panes │ picker/tab2/pane 2     │
-│    ▶ · 1                                                   1 pane │                        │
-│    ▼ ● tab2                                               2 panes │ id      w4:p2          │
-│      ● pane 2                                            󰚩 claude │ agent   󰚩 claude       │
-│      ○ pane 3                                               shell │ status  ⠋ working      │
-│  ▶ ○ herdr                                                 1 pane │ cwd     ~/src/picker   │
-│→     ○ pane 1                                               shell │ branch  main           │
-│                                                                   │                        │
-├───────────────────────────────────────────────────────────────────┴────────────────────────┤
-│ ↑/↓ move   → expand   ← collapse   / search   b/w/i/d/a states   enter accept   esc cancel │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
-```
+![the picker: workspace → tab → pane tree with agent status icons on the left, and a detail panel with agent, status, cwd, and git branch on the right](assets/picker.png)
 
 ## Features
 
