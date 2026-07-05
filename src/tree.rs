@@ -42,7 +42,12 @@ pub enum RowKind {
 pub enum FocusTarget {
     Workspace(String),
     Tab(String),
-    Pane(String),
+    /// `tab_id` is the fallback target: herdr only grew the socket-side
+    /// `pane.focus` after 0.7.1, so older servers focus the pane's tab.
+    Pane {
+        pane_id: String,
+        tab_id: String,
+    },
 }
 
 /// One visible line of the tree.
@@ -67,6 +72,15 @@ pub struct Row {
     pub detail: Vec<(&'static str, String)>,
     /// Pane rows: working directory, for the optional show_cwd column.
     pub cwd: Option<String>,
+    /// Pane rows: user/plugin-set status text; wins over the state name.
+    pub custom_status: Option<String>,
+    /// True when this row is the last *visible* child of its parent —
+    /// tree-command style guides close it with `└──` instead of `├──`.
+    pub last_child: bool,
+    /// One entry per ancestor level between the workspace and this row
+    /// (deepest rows only): true when that ancestor still has visible
+    /// siblings below, i.e. the guide column needs a `│` continuation.
+    pub ancestor_continues: Vec<bool>,
 }
 
 #[derive(Debug)]
@@ -163,6 +177,31 @@ impl Tree {
         tree
     }
 
+    /// Carries the user's expand/collapse choices over to a freshly
+    /// fetched tree (matched by workspace/tab id). Nodes that are new to
+    /// this snapshot keep whatever the initial expansion gave them.
+    pub fn adopt_expansion_from(&mut self, previous: &Tree) {
+        for ws in &mut self.workspaces {
+            let Some(prev_ws) = previous
+                .workspaces
+                .iter()
+                .find(|prev| prev.workspace_id == ws.workspace_id)
+            else {
+                continue;
+            };
+            ws.expanded = prev_ws.expanded;
+            for tab in &mut ws.tabs {
+                if let Some(prev_tab) = prev_ws
+                    .tabs
+                    .iter()
+                    .find(|prev| prev.info.tab_id == tab.info.tab_id)
+                {
+                    tab.expanded = prev_tab.expanded;
+                }
+            }
+        }
+    }
+
     fn apply_initial_expansion(&mut self, initial: InitialExpansion) {
         for ws in &mut self.workspaces {
             let ws_focused = ws.info.as_ref().is_some_and(|i| i.focused);
@@ -207,16 +246,24 @@ impl Tree {
         };
         let mut rows = Vec::new();
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
-            // (tab shown, per-pane shown) for this workspace under `filter`.
+            // Like the built-in goto (navigator_child_rows: `multi_tab =
+            // ws.tabs.len() > 1`), a single-tab workspace skips the tab
+            // level entirely — its panes hang directly off the workspace.
+            // Placeholder workspaces (orphan tabs) keep the tab row: there
+            // the tab is the only real node.
+            let single_tab = ws.info.is_some() && ws.tabs.len() == 1;
+            // (tab row shown, per-pane shown) for this workspace under
+            // `filter`. For single-tab workspaces the tab row is never
+            // shown, and its label is not searchable either.
             let tab_states: Vec<(bool, Vec<bool>)> = ws
                 .tabs
                 .iter()
                 .map(|tab| match filter {
                     Option::None => (
-                        ws.expanded,
+                        !single_tab && ws.expanded,
                         tab.panes
                             .iter()
-                            .map(|_| ws.expanded && tab.expanded)
+                            .map(|_| ws.expanded && (single_tab || tab.expanded))
                             .collect(),
                     ),
                     Some(query) => {
@@ -227,23 +274,23 @@ impl Tree {
                                 crate::search::label_matches(&pane_label(&pane.info), query)
                             })
                             .collect();
-                        let tab_shown = crate::search::label_matches(&tab.info.label, query)
-                            || pane_shown.iter().any(|&shown| shown);
+                        let tab_shown = !single_tab
+                            && (crate::search::label_matches(&tab.info.label, query)
+                                || pane_shown.iter().any(|&shown| shown));
                         (tab_shown, pane_shown)
                     }
                 })
                 .collect();
+            let any_child_shown = tab_states
+                .iter()
+                .any(|(tab_shown, panes)| *tab_shown || panes.iter().any(|&shown| shown));
             let ws_shown = match filter {
                 Option::None => true,
-                Some(query) => {
-                    crate::search::label_matches(&ws.label, query)
-                        || tab_states.iter().any(|(shown, _)| *shown)
-                }
+                Some(query) => crate::search::label_matches(&ws.label, query) || any_child_shown,
             };
             if !ws_shown {
                 continue;
             }
-            let any_tab_shown = tab_states.iter().any(|(shown, _)| *shown);
 
             let ws_path = NodePath {
                 ws: ws_idx,
@@ -262,10 +309,14 @@ impl Tree {
                 kind: RowKind::Workspace,
                 depth: 0,
                 label: ws.label.clone(),
-                expandable: !ws.tabs.is_empty(),
+                expandable: if single_tab {
+                    !ws.tabs[0].panes.is_empty()
+                } else {
+                    !ws.tabs.is_empty()
+                },
                 expanded: match filter {
                     Option::None => ws.expanded,
-                    Some(_) => any_tab_shown,
+                    Some(_) => any_child_shown,
                 },
                 pane_count: ws_pane_count,
                 agent: None,
@@ -285,42 +336,47 @@ impl Tree {
                     ("status", ws_status.name().to_string()),
                 ],
                 cwd: None,
+                custom_status: None,
+                last_child: false,
+                ancestor_continues: Vec::new(),
             });
             for (tab_idx, (tab, (tab_shown, pane_shown))) in
                 ws.tabs.iter().zip(&tab_states).enumerate()
             {
-                if !tab_shown {
-                    continue;
+                if *tab_shown {
+                    let tab_path = NodePath {
+                        ws: ws_idx,
+                        tab: Some(tab_idx),
+                        pane: None,
+                    };
+                    let any_pane_shown = pane_shown.iter().any(|&shown| shown);
+                    rows.push(Row {
+                        path: tab_path,
+                        kind: RowKind::Tab,
+                        depth: 1,
+                        label: tab.info.label.clone(),
+                        expandable: !tab.panes.is_empty(),
+                        expanded: match filter {
+                            Option::None => tab.expanded,
+                            Some(_) => any_pane_shown,
+                        },
+                        pane_count: tab.info.pane_count,
+                        agent: None,
+                        agent_status: tab.info.agent_status,
+                        is_current: current == Some(tab_path),
+                        focus_target: FocusTarget::Tab(tab.info.tab_id.clone()),
+                        detail: vec![
+                            ("id", tab.info.tab_id.clone()),
+                            ("workspace", ws.label.clone()),
+                            ("panes", tab.info.pane_count.to_string()),
+                            ("status", tab.info.agent_status.name().to_string()),
+                        ],
+                        cwd: None,
+                        custom_status: None,
+                        last_child: false,
+                        ancestor_continues: Vec::new(),
+                    });
                 }
-                let tab_path = NodePath {
-                    ws: ws_idx,
-                    tab: Some(tab_idx),
-                    pane: None,
-                };
-                let any_pane_shown = pane_shown.iter().any(|&shown| shown);
-                rows.push(Row {
-                    path: tab_path,
-                    kind: RowKind::Tab,
-                    depth: 1,
-                    label: tab.info.label.clone(),
-                    expandable: !tab.panes.is_empty(),
-                    expanded: match filter {
-                        Option::None => tab.expanded,
-                        Some(_) => any_pane_shown,
-                    },
-                    pane_count: tab.info.pane_count,
-                    agent: None,
-                    agent_status: tab.info.agent_status,
-                    is_current: current == Some(tab_path),
-                    focus_target: FocusTarget::Tab(tab.info.tab_id.clone()),
-                    detail: vec![
-                        ("id", tab.info.tab_id.clone()),
-                        ("workspace", ws.label.clone()),
-                        ("panes", tab.info.pane_count.to_string()),
-                        ("status", tab.info.agent_status.name().to_string()),
-                    ],
-                    cwd: None,
-                });
                 for (pane_idx, pane) in tab.panes.iter().enumerate() {
                     if !pane_shown[pane_idx] {
                         continue;
@@ -341,7 +397,13 @@ impl Tree {
                             "agent",
                             agent.clone().unwrap_or_else(|| "shell".to_string()),
                         ),
-                        ("status", pane.info.agent_status.name().to_string()),
+                        (
+                            "status",
+                            pane.info
+                                .custom_status
+                                .clone()
+                                .unwrap_or_else(|| pane.info.agent_status.name().to_string()),
+                        ),
                     ];
                     if let Some(cwd) = &pane.info.cwd {
                         detail.push(("cwd", cwd.clone()));
@@ -354,7 +416,7 @@ impl Tree {
                     rows.push(Row {
                         path: pane_path,
                         kind: RowKind::Pane,
-                        depth: 2,
+                        depth: if single_tab { 1 } else { 2 },
                         label: pane_label(&pane.info),
                         expandable: false,
                         expanded: false,
@@ -362,13 +424,20 @@ impl Tree {
                         agent,
                         agent_status: pane.info.agent_status,
                         is_current: current == Some(pane_path),
-                        focus_target: FocusTarget::Pane(pane.info.pane_id.clone()),
+                        focus_target: FocusTarget::Pane {
+                            pane_id: pane.info.pane_id.clone(),
+                            tab_id: pane.info.tab_id.clone(),
+                        },
                         detail,
                         cwd: pane.info.cwd.clone(),
+                        custom_status: pane.info.custom_status.clone(),
+                        last_child: false,
+                        ancestor_continues: Vec::new(),
                     });
                 }
             }
         }
+        annotate_guides(&mut rows);
         rows
     }
 
@@ -396,12 +465,25 @@ impl Tree {
             });
         };
         let tab = &ws.tabs[tab_idx];
-        if !tab.expanded {
-            return Some(NodePath {
+        // Single-tab workspaces have no tab row: the fallback for "panes
+        // hidden / no focused pane" is the workspace itself, and pane
+        // visibility follows the workspace's expansion alone.
+        let single_tab = ws.info.is_some() && ws.tabs.len() == 1;
+        let branch_path = if single_tab {
+            NodePath {
+                ws: ws_idx,
+                tab: None,
+                pane: None,
+            }
+        } else {
+            NodePath {
                 ws: ws_idx,
                 tab: Some(tab_idx),
                 pane: None,
-            });
+            }
+        };
+        if !single_tab && !tab.expanded {
+            return Some(branch_path);
         }
         match tab.panes.iter().position(|pane| pane.info.focused) {
             Some(pane_idx) => Some(NodePath {
@@ -409,11 +491,7 @@ impl Tree {
                 tab: Some(tab_idx),
                 pane: Some(pane_idx),
             }),
-            None => Some(NodePath {
-                ws: ws_idx,
-                tab: Some(tab_idx),
-                pane: None,
-            }),
+            None => Some(branch_path),
         }
     }
 
@@ -468,18 +546,31 @@ impl Tree {
         }
     }
 
+    /// The nearest *visible* ancestor: panes in a single-tab workspace skip
+    /// the (never rendered) tab level and report the workspace.
     pub fn parent_path(&self, path: NodePath) -> Option<NodePath> {
+        let ws_path = NodePath {
+            ws: path.ws,
+            tab: None,
+            pane: None,
+        };
         match (path.tab, path.pane) {
-            (Some(tab), Some(_)) => Some(NodePath {
-                ws: path.ws,
-                tab: Some(tab),
-                pane: None,
-            }),
-            (Some(_), None) => Some(NodePath {
-                ws: path.ws,
-                tab: None,
-                pane: None,
-            }),
+            (Some(tab), Some(_)) => {
+                let single_tab = self
+                    .workspaces
+                    .get(path.ws)
+                    .is_some_and(|ws| ws.info.is_some() && ws.tabs.len() == 1);
+                if single_tab {
+                    Some(ws_path)
+                } else {
+                    Some(NodePath {
+                        ws: path.ws,
+                        tab: Some(tab),
+                        pane: None,
+                    })
+                }
+            }
+            (Some(_), None) => Some(ws_path),
             _ => None,
         }
     }
@@ -520,11 +611,50 @@ pub fn drop_own_overlay_pane(
     }
 }
 
-/// Pane display label: the user-set label wins; otherwise "pane N" derived
-/// from the public id suffix ("w1:p8" -> "pane 8").
+/// Fills in tree-guide info over the flattened rows: whether each row is
+/// the last visible child of its parent (`└──` vs `├──`), and which
+/// ancestor levels still have siblings below (`│` continuation columns).
+fn annotate_guides(rows: &mut [Row]) {
+    for i in 0..rows.len() {
+        let depth = rows[i].depth;
+        if depth == 0 {
+            continue;
+        }
+        let mut last_child = true;
+        for row in &rows[i + 1..] {
+            if row.depth < depth {
+                break;
+            }
+            if row.depth == depth {
+                last_child = false;
+                break;
+            }
+        }
+        let ancestor_continues = (1..depth)
+            .map(|level| {
+                rows[i + 1..]
+                    .iter()
+                    .take_while(|row| row.depth >= level)
+                    .any(|row| row.depth == level)
+            })
+            .collect();
+        rows[i].last_child = last_child;
+        rows[i].ancestor_continues = ancestor_continues;
+    }
+}
+
+/// Pane display label, mirroring the built-in goto's chain
+/// (`navigator_pane_rows_for_tab`): effective title -> manual label ->
+/// agent label -> "pane N" from the public id suffix ("w1:p8" -> "pane 8").
+/// (The built-in's final launch-command fallback is not exposed by the API.)
 fn pane_label(info: &PaneInfo) -> String {
-    if let Some(label) = &info.label {
-        return label.clone();
+    for candidate in [&info.title, &info.label, &info.agent, &info.display_agent]
+        .into_iter()
+        .flatten()
+    {
+        if !candidate.is_empty() {
+            return candidate.clone();
+        }
     }
     let suffix = info
         .pane_id
@@ -582,6 +712,7 @@ mod tests {
             cwd: None,
             label: None,
             title: None,
+            custom_status: None,
             terminal_id: format!("term_{id}"),
         }
     }
@@ -616,17 +747,55 @@ mod tests {
     #[test]
     fn all_expansion_flattens_everything_in_order() {
         let rows = fixture(InitialExpansion::All).visible_rows();
+        // beta has a single tab, so (like the built-in goto) its tab row
+        // is skipped and the pane hangs directly off the workspace.
         assert_eq!(
             labels(&rows),
-            vec![
-                "alpha", "a-one", "pane 1", "pane 2", "a-two", "pane 3", "beta", "b-one", "pane 1"
-            ]
+            vec!["alpha", "a-one", "claude", "pane 2", "a-two", "pane 3", "beta", "pane 1"]
         );
         let depths: Vec<u8> = rows.iter().map(|r| r.depth).collect();
-        assert_eq!(depths, vec![0, 1, 2, 2, 1, 2, 0, 1, 2]);
+        assert_eq!(depths, vec![0, 1, 2, 2, 1, 2, 0, 1]);
         assert_eq!(rows[0].kind, RowKind::Workspace);
         assert_eq!(rows[1].kind, RowKind::Tab);
         assert_eq!(rows[2].kind, RowKind::Pane);
+        assert_eq!(rows[7].kind, RowKind::Pane, "beta's pane, no tab between");
+    }
+
+    #[test]
+    fn single_tab_workspace_skips_the_tab_level_like_the_builtin() {
+        // Mirrors herdr's navigator_rows_show_tab_nodes_only_for_multi_tab_workspaces.
+        let tree = fixture(InitialExpansion::All);
+        let rows = tree.visible_rows();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.kind == RowKind::Tab && r.label == "b-one"),
+            "single-tab workspace must not render its tab row"
+        );
+        let beta_pane = rows
+            .iter()
+            .find(|r| r.kind == RowKind::Pane && r.path.ws == 1)
+            .unwrap();
+        assert_eq!(beta_pane.depth, 1, "pane sits directly under the workspace");
+        assert_eq!(
+            tree.parent_path(beta_pane.path),
+            Some(NodePath {
+                ws: 1,
+                tab: None,
+                pane: None
+            }),
+            "collapse from the pane walks to the workspace"
+        );
+
+        // Filtering by the hidden tab's label reveals nothing (the built-in
+        // cannot match it either — the row does not exist).
+        assert!(tree.visible_rows_filtered("b-one").is_empty());
+        // A pane match still reveals the chain: workspace -> pane.
+        // (w1:p1 is labeled "claude" now, so only beta's pane matches.)
+        assert_eq!(
+            labels(&tree.visible_rows_filtered("pane 1")),
+            vec!["beta", "pane 1"]
+        );
     }
 
     #[test]
@@ -634,7 +803,7 @@ mod tests {
         let rows = fixture(InitialExpansion::CurrentWorkspace).visible_rows();
         assert_eq!(
             labels(&rows),
-            vec!["alpha", "a-one", "pane 1", "pane 2", "a-two", "beta"]
+            vec!["alpha", "a-one", "claude", "pane 2", "a-two", "beta"]
         );
         assert!(rows[0].expanded, "focused workspace expanded");
         assert!(rows[1].expanded, "focused tab expanded");
@@ -685,7 +854,7 @@ mod tests {
             .filter(|r| r.is_current)
             .map(|r| r.label.as_str())
             .collect();
-        assert_eq!(current, vec!["pane 1"], "focused pane when visible");
+        assert_eq!(current, vec!["claude"], "focused pane when visible");
 
         let mut tree = fixture(InitialExpansion::All);
         let tab_path = tree.visible_rows()[1].path;
@@ -725,7 +894,13 @@ mod tests {
             FocusTarget::Workspace("w1".to_string())
         );
         assert_eq!(rows[1].focus_target, FocusTarget::Tab("w1:t1".to_string()));
-        assert_eq!(rows[2].focus_target, FocusTarget::Pane("w1:p1".to_string()));
+        assert_eq!(
+            rows[2].focus_target,
+            FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            }
+        );
         assert_eq!(rows[2].agent.as_deref(), Some("claude"));
         assert_eq!(rows[3].agent, None, "agentless pane");
         assert_eq!(rows[1].pane_count, 2, "tab pane count");
@@ -734,18 +909,32 @@ mod tests {
     }
 
     #[test]
-    fn pane_label_prefers_explicit_label_then_id_suffix() {
-        let mut with_label = pane("w1:p7", "w1:t1", "w1", false, None);
-        with_label.label = Some("builder".to_string());
+    fn pane_label_follows_the_builtin_chain() {
+        // title > manual label > agent label > "pane N"
+        let mut titled = pane("w1:p1", "w1:t1", "w1", false, Some("claude"));
+        titled.title = Some("make -j8".to_string());
+        titled.label = Some("builder".to_string());
+
+        let mut labeled = pane("w1:p2", "w1:t1", "w1", false, Some("claude"));
+        labeled.label = Some("builder".to_string());
+
+        let agent_only = pane("w1:p3", "w1:t1", "w1", false, Some("claude"));
+
+        let mut empty_title = pane("w1:p8", "w1:t1", "w1", false, None);
+        empty_title.title = Some(String::new()); // empty strings do not count
+
         let tree = Tree::build(
             vec![workspace("w1", 1, "alpha", true)],
-            vec![tab("w1:t1", "w1", 1, "a-one", true, 2)],
-            vec![with_label, pane("w1:p8", "w1:t1", "w1", false, None)],
+            vec![tab("w1:t1", "w1", 1, "a-one", true, 4)],
+            vec![titled, labeled, agent_only, empty_title],
             InitialExpansion::All,
         );
         let rows = tree.visible_rows();
+        // Single-tab workspace: panes at rows 1..=4, no tab row.
+        assert_eq!(rows[1].label, "make -j8");
         assert_eq!(rows[2].label, "builder");
-        assert_eq!(rows[3].label, "pane 8");
+        assert_eq!(rows[3].label, "claude");
+        assert_eq!(rows[4].label, "pane 8");
     }
 
     #[test]
@@ -884,9 +1073,15 @@ mod tests {
         let mut with_meta = pane("w1:p1", "w1:t1", "w1", true, Some("claude"));
         with_meta.cwd = Some("/home/u/repo".to_string());
         with_meta.title = Some("make -j8".to_string());
+        with_meta.custom_status = Some("reviewing".to_string());
         let tree = Tree::build(
             vec![workspace("w1", 1, "alpha", true)],
-            vec![tab("w1:t1", "w1", 1, "a-one", true, 2)],
+            vec![
+                tab("w1:t1", "w1", 1, "a-one", true, 2),
+                // Second tab keeps the workspace multi-tab so the tab row
+                // (whose detail this test checks) actually renders.
+                tab("w1:t2", "w1", 2, "a-two", false, 0),
+            ],
             vec![with_meta, pane("w1:p2", "w1:t1", "w1", false, None)],
             InitialExpansion::All,
         );
@@ -904,11 +1099,13 @@ mod tests {
             vec![
                 ("id", "w1:p1".to_string()),
                 ("agent", "claude".to_string()),
-                ("status", "idle".to_string()),
+                // custom_status wins over the state name ("idle").
+                ("status", "reviewing".to_string()),
                 ("cwd", "/home/u/repo".to_string()),
                 ("title", "make -j8".to_string()),
             ]
         );
+        assert_eq!(rows[2].custom_status.as_deref(), Some("reviewing"));
 
         let agentless = &rows[3].detail;
         assert!(agentless.contains(&("agent", "shell".to_string())));

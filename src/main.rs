@@ -82,31 +82,44 @@ fn main() -> ExitCode {
         Ok(client) => client,
         Err(e) => return fail_visibly(&format!("{e:#}")),
     };
-    let snapshot = client.list_workspaces().and_then(|workspaces| {
-        let tabs = client.list_tabs()?;
-        let panes = client.list_panes()?;
-        Ok((workspaces, tabs, panes))
-    });
-    let (mut workspaces, mut tabs, mut panes) = match snapshot {
-        Ok(snapshot) => snapshot,
+    let context_pane_id = context_focused_pane_id();
+    let tree = match fetch_tree(&mut client, context_pane_id.as_deref(), initial_expansion) {
+        Ok(tree) => tree,
         Err(e) => return fail_visibly(&format!("{e:#}")),
     };
-    tree::drop_own_overlay_pane(
-        &mut workspaces,
-        &mut tabs,
-        &mut panes,
-        context_focused_pane_id().as_deref(),
-    );
-
-    let tree = Tree::build(workspaces, tabs, panes, initial_expansion);
     let mut app = App::new(tree, enter_on_branch);
     let hints = ui::FooterHints::from_keymap(&keymaps.normal);
 
+    // Poll with a timeout instead of blocking on input: idle timeouts
+    // advance the tick that animates the working-status spinner, exactly
+    // like the built-in's. Keys still resolve immediately (chords stay
+    // timeout-free — the tick only redraws).
+    const SPINNER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(125);
+    // The built-in recomputes its rows from live state on every frame; the
+    // closest a snapshot client gets is refreshing about once a second.
+    const REFRESH_EVERY_TICKS: u32 = 8;
     let mut terminal = ratatui::init();
     let selection = loop {
         if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app, &hints, &view)) {
             ratatui::restore();
             return fail_visibly(&format!("failed to draw: {e}"));
+        }
+        match event::poll(SPINNER_INTERVAL) {
+            Ok(false) => {
+                app.tick = app.tick.wrapping_add(1);
+                if app.tick % REFRESH_EVERY_TICKS == 0 {
+                    // A failed refresh (herdr restarting?) keeps the last
+                    // good snapshot; the next interval retries anyway.
+                    if let Ok(tree) =
+                        fetch_tree(&mut client, context_pane_id.as_deref(), initial_expansion)
+                    {
+                        app.replace_tree(tree);
+                    }
+                }
+                continue;
+            }
+            Ok(true) => {}
+            Err(_) => break None,
         }
         match event::read() {
             Ok(Event::Key(key)) => {
@@ -129,15 +142,36 @@ fn main() -> ExitCode {
         let focused = match &target {
             FocusTarget::Workspace(id) => client.focus_workspace(id),
             FocusTarget::Tab(id) => client.focus_tab(id),
-            FocusTarget::Pane(id) => client.focus_pane(id),
+            // Socket-side pane.focus only exists after herdr 0.7.1; older
+            // servers reject the method, so fall back to the pane's tab
+            // (which lands on that tab's focused pane).
+            FocusTarget::Pane { pane_id, tab_id } => client
+                .focus_pane(pane_id)
+                .or_else(|_| client.focus_tab(tab_id)),
         };
         if let Err(e) = focused {
-            eprintln!("herdr-configurable-picker: {e:#}");
+            // The pane (and its stderr) vanishes the moment we return, so
+            // the log file is the only place this error can survive.
+            report_warnings(&[format!("focus failed for {target:?}: {e:#}")]);
         }
     }
     // Exit 0 even on cancel: the overlay closing is the normal outcome, and
     // herdr raises a toast for non-zero exits.
     ExitCode::SUCCESS
+}
+
+/// One full snapshot: the three lists, normalized (our own overlay pane
+/// dropped), joined into a tree.
+fn fetch_tree(
+    client: &mut SocketClient,
+    context_pane_id: Option<&str>,
+    initial_expansion: InitialExpansion,
+) -> anyhow::Result<Tree> {
+    let mut workspaces = client.list_workspaces()?;
+    let mut tabs = client.list_tabs()?;
+    let mut panes = client.list_panes()?;
+    tree::drop_own_overlay_pane(&mut workspaces, &mut tabs, &mut panes, context_pane_id);
+    Ok(Tree::build(workspaces, tabs, panes, initial_expansion))
 }
 
 /// The pane the user came from, out of HERDR_PLUGIN_CONTEXT_JSON. Needed to

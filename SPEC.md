@@ -108,7 +108,8 @@ show_pane_count   = true
 show_agent_status = true
 show_cwd          = false     # off by default; opt in for wide terminals
 
-# "nerd" -> ○●✓✗·   "ascii" -> o+xv-   "emoji" -> ⚪🟢✅❌⚫
+# Matches the built-in's agent icons (blocked/working/done/idle/unknown):
+# "nerd" -> ◉ ⠋(spinner) ● ✓ ○   "ascii" -> ! |(spinner) * v o   "emoji" -> 🔴🟡🔵✅⚪
 icon_set = "nerd"
 
 [behavior]
@@ -203,7 +204,7 @@ struct Pane      { id, tab_id, workspace_id, agent: Option<String>,
                    agent_status, cwd, focused: bool, terminal_id }
 ```
 
-- **Snapshot semantics**: fetched once when the picker opens. No live subscription. Reopen for a fresh view.
+- **Refresh semantics**: fetched on open and re-fetched about once a second while the picker is open (no event subscription — three cheap list calls per refresh). The built-in recomputes its rows from live state every frame; polling is the snapshot-client equivalent. A refresh preserves the cursor's node, the user's expand/collapse choices, and the active search filter; statuses, labels, and appearing/disappearing panes update in place. A failed refresh keeps the last good snapshot and retries on the next interval.
 
 ## Focus / jump behavior
 
@@ -213,7 +214,9 @@ Selecting a node sends the matching socket method:
 | --------- | ------ | ----- |
 | Workspace | `workspace.focus {workspace_id}` | Lands on the workspace's focused tab & pane. |
 | Tab       | `tab.focus {tab_id}`             | Lands on the tab's focused pane. |
-| Pane      | `pane.focus {pane_id}`           | Works for **all** panes, agent or not — the socket API has `pane.focus` even though the CLI does not expose it. |
+| Pane      | `pane.focus {pane_id}`, falling back to `tab.focus {tab_id}` | The socket-side `pane.focus` (never exposed by the CLI) only exists in herdr builds **after 0.7.1**; older servers reject the method, so the picker retries with the pane's tab, which lands on that tab's focused pane. |
+
+herdr answers a request it cannot parse (e.g. an unknown method) with an `invalid_request` error whose `id` is **empty** — clients must check the error body before comparing ids, or the real message gets masked.
 
 ## Search
 

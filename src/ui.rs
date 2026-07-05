@@ -47,12 +47,21 @@ impl FooterHints {
         FooterHints { entries }
     }
 
-    fn line(&self) -> String {
-        self.entries
-            .iter()
-            .map(|(key, action)| format!("{key} {action}"))
-            .collect::<Vec<_>>()
-            .join("   ")
+    /// Keys pop (bold), action words recede (dim): the keys are what the
+    /// eye is hunting for in a hint line.
+    fn line(&self, view: &ViewOptions) -> Line<'static> {
+        let mut spans = Vec::new();
+        for (i, (key, action)) in self.entries.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("   "));
+            }
+            spans.push(Span::styled(
+                key.clone(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(format!(" {action}"), dim_style(view)));
+        }
+        Line::from(spans)
     }
 }
 
@@ -105,9 +114,16 @@ impl ViewOptions {
 const DETAIL_MIN_TOTAL_WIDTH: u16 = 60;
 
 pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOptions) {
-    let outer = Block::bordered().title(" goto ");
-    let inner = outer.inner(frame.area());
-    frame.render_widget(outer, frame.area());
+    // No frame of our own: herdr already draws pane chrome (border + the
+    // manifest pane title) around this canvas, and a second box inside it
+    // just wastes two rows and two columns. Accent color is reserved for
+    // the internal separators.
+    let border_style = if view.color {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    };
+    let inner = frame.area();
 
     // The search prompt line exists while the prompt is focused or a filter
     // is still applied, so the user can always see why rows are missing.
@@ -127,18 +143,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
     };
 
     if let Some(search_area) = search_area {
-        // The trailing bar marks the prompt as focused (typing goes here).
-        let prompt = if app.mode == Mode::Search {
-            format!(" / {}▏", app.query)
-        } else {
-            format!(" / {}", app.query)
-        };
-        let style = if app.mode == Mode::Search {
+        // The trailing bar marks the prompt as focused (typing goes here);
+        // the query is the content, the "/" just furniture.
+        let focused = app.mode == Mode::Search;
+        let query_style = if focused {
             Style::new().add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::DIM)
         };
-        frame.render_widget(Paragraph::new(prompt).style(style), search_area);
+        let mut spans = vec![
+            Span::styled(" / ", dim_style(view)),
+            Span::styled(app.query.clone(), query_style),
+        ];
+        if focused {
+            spans.push(Span::raw("▏"));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
     }
 
     let (list_area, detail_area) = if main_area.width >= DETAIL_MIN_TOTAL_WIDTH {
@@ -161,10 +181,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         frame.render_widget(Paragraph::new(placeholder), list_area);
     } else {
         let width = list_area.width as usize;
+        let tick = app.tick;
         let items: Vec<ListItem> = app
             .rows()
             .iter()
-            .map(|row| ListItem::new(row_line(row, width, view)))
+            .map(|row| ListItem::new(row_line(row, width, view, tick)))
             .collect();
         let list = List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
         let mut state = ListState::default().with_selected(Some(app.cursor));
@@ -175,16 +196,22 @@ pub fn draw(frame: &mut Frame, app: &mut App, hints: &FooterHints, view: &ViewOp
         render_detail(frame, app, detail_area, view);
     }
 
-    let footer = Paragraph::new(hints.line()).block(Block::new().borders(Borders::TOP));
+    let footer = Paragraph::new(hints.line(view)).block(
+        Block::new()
+            .borders(Borders::TOP)
+            .border_style(border_style),
+    );
     frame.render_widget(footer, footer_area);
 }
 
+/// Status colors matching the built-in's agent_icon: blocked red, working
+/// yellow, done teal(ish), idle green, unknown muted.
 fn status_color(status: AgentStatus) -> Option<Color> {
     match status {
-        AgentStatus::Idle => None,
-        AgentStatus::Working => Some(Color::Green),
+        AgentStatus::Idle => Some(Color::Green),
+        AgentStatus::Working => Some(Color::Yellow),
         AgentStatus::Blocked => Some(Color::Red),
-        AgentStatus::Done => Some(Color::Blue),
+        AgentStatus::Done => Some(Color::Cyan),
         AgentStatus::Unknown => Some(Color::DarkGray),
     }
 }
@@ -199,7 +226,14 @@ fn dim_style(view: &ViewOptions) -> Style {
 
 /// Right-hand panel describing the row under the cursor.
 fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, view: &ViewOptions) {
-    let block = Block::new().borders(Borders::LEFT);
+    let border_style = if view.color {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new()
+    };
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -250,39 +284,61 @@ fn shorten_home(path: &str, home: Option<&str>) -> String {
 /// label on the left; pane count (branches) or agent name plus optional cwd
 /// (panes) right-aligned and dimmed. Drops the right column on narrow
 /// terminals rather than wrapping.
-fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
+fn row_line(row: &Row, width: usize, view: &ViewOptions, tick: u32) -> Line<'static> {
     let marker = if row.is_current { "→" } else { " " };
     let marker_style = if row.is_current && view.color {
         Style::new().fg(Color::Cyan)
     } else {
         Style::new()
     };
-    let indent = "  ".repeat(row.depth as usize);
-    let glyph = if row.expandable {
-        if row.expanded {
-            "▼ "
-        } else {
-            "▶ "
-        }
-    } else if row.kind == RowKind::Pane {
-        ""
+    // Tree-command style guides: workspaces open with ▾/▸, children hang
+    // off │ / ├── / └── rails. A collapsed branch keeps a ▸ on its rail so
+    // hidden children stay discoverable.
+    let glyph = if row.kind == RowKind::Workspace {
+        if row.expanded { "▾ " } else { "▸ " }.to_string()
     } else {
-        "· " // childless workspace/tab: nothing to expand
+        let mut rail = String::from("  ");
+        for &continues in &row.ancestor_continues {
+            rail.push_str(if continues { "│   " } else { "    " });
+        }
+        let collapsed = row.expandable && !row.expanded;
+        rail.push_str(match (row.last_child, collapsed) {
+            (false, false) => "├── ",
+            (true, false) => "└── ",
+            (false, true) => "├─▸ ",
+            (true, true) => "└─▸ ",
+        });
+        rail
     };
 
     let mut spans = vec![
         Span::styled(marker.to_string(), marker_style),
-        Span::raw(format!(" {indent}{glyph}")),
+        Span::raw(" "),
+        Span::styled(glyph, dim_style(view)),
     ];
     if let Some(set) = view.icon_set {
-        let icon = set.icon(row.agent_status);
+        let icon = set.icon(row.agent_status, tick);
         let style = match status_color(row.agent_status) {
             Some(color) if view.color => Style::new().fg(color),
             _ => Style::new(),
         };
         spans.push(Span::styled(format!("{icon} "), style));
     }
-    spans.push(Span::raw(row.label.clone()));
+    // Bold workspaces anchor the hierarchy visually. Like the built-in,
+    // their pane count rides in the label ("mothership (3)"); the display
+    // suffix stays out of Row.label so search and the detail panel see the
+    // clean name.
+    let label_style = if row.kind == RowKind::Workspace {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    let label_text = if row.kind == RowKind::Workspace && view.show_pane_count {
+        format!("{} ({})", row.label, row.pane_count)
+    } else {
+        row.label.clone()
+    };
+    spans.push(Span::styled(label_text, label_style));
 
     let right = right_column(row, view);
     let left_width: usize = spans
@@ -308,17 +364,29 @@ fn row_line(row: &Row, width: usize, view: &ViewOptions) -> Line<'static> {
 
 fn right_column(row: &Row, view: &ViewOptions) -> String {
     if row.kind == RowKind::Pane {
-        let agent = row.agent.as_deref().unwrap_or("shell");
+        // The built-in's pane meta: "{agent} · {status}" for agent panes,
+        // bare "shell" otherwise. A custom status wins over the state name.
+        let base = match &row.agent {
+            Some(agent) => {
+                let status = row
+                    .custom_status
+                    .clone()
+                    .unwrap_or_else(|| row.agent_status.name().to_string());
+                format!("{agent} · {status}")
+            }
+            None => "shell".to_string(),
+        };
         match (&row.cwd, view.show_cwd) {
             (Some(cwd), true) => {
-                format!("{agent}  {}", shorten_home(cwd, view.home.as_deref()))
+                format!("{base}  {}", shorten_home(cwd, view.home.as_deref()))
             }
-            _ => agent.to_string(),
+            _ => base,
         }
-    } else if view.show_pane_count {
+    } else if row.kind == RowKind::Tab && view.show_pane_count {
         let panes = if row.pane_count == 1 { "pane" } else { "panes" };
         format!("{} {panes}", row.pane_count)
     } else {
+        // Workspace counts live in the label suffix, like the built-in.
         String::new()
     }
 }
@@ -385,11 +453,34 @@ mod tests {
             cwd: Some("/home/u/src/repo".to_string()),
             label: None,
             title: None,
+            custom_status: None,
             terminal_id: format!("term_{id}"),
         }
     }
 
     fn sample_app() -> App {
+        // Two tabs so the tab level actually renders (single-tab
+        // workspaces skip it, like the built-in goto).
+        let mut ws = workspace("w1", 1, "mothership", true);
+        ws.pane_count = 3;
+        let tree = Tree::build(
+            vec![ws],
+            vec![
+                tab("w1:t1", "w1", 1, "main", true),
+                tab("w1:t2", "w1", 2, "logs", false),
+            ],
+            vec![
+                pane("w1:p1", "w1:t1", "w1", true, Some("claude")),
+                pane("w1:p2", "w1:t1", "w1", false, None),
+                pane("w1:p3", "w1:t2", "w1", false, None),
+            ],
+            InitialExpansion::All,
+        );
+        App::new(tree, EnterOnBranch::Jump)
+    }
+
+    #[test]
+    fn single_tab_workspace_renders_panes_directly_under_it() {
         let tree = Tree::build(
             vec![workspace("w1", 1, "mothership", true)],
             vec![tab("w1:t1", "w1", 1, "main", true)],
@@ -399,7 +490,15 @@ mod tests {
             ],
             InitialExpansion::All,
         );
-        App::new(tree, EnterOnBranch::Jump)
+        let mut app = App::new(tree, EnterOnBranch::Jump);
+        let terminal = render(80, 24, &mut app);
+        let screen = screen(&terminal);
+
+        assert!(!screen.contains("main"), "no tab row:\n{screen}");
+        assert!(
+            screen.contains("  ├── ✓ claude"),
+            "panes at depth 1, right under the workspace:\n{screen}"
+        );
     }
 
     fn default_hints() -> FooterHints {
@@ -459,13 +558,36 @@ mod tests {
         let screen = screen(&terminal);
 
         // ws=unknown "·", tab=working "●", panes=idle "○".
-        assert!(screen.contains("▼ · mothership"), "screen:\n{screen}");
-        assert!(screen.contains("  ▼ ● main"), "indented tab:\n{screen}");
-        assert!(screen.contains("    ○ pane 1"), "indented pane:\n{screen}");
+        assert!(
+            screen.contains("▾ ○ mothership (3)"),
+            "workspace pane count rides in the label:\n{screen}"
+        );
+        assert!(screen.contains("  ├── ⠋ main"), "indented tab:\n{screen}");
+        assert!(
+            screen.contains("│   ├── ✓ claude"),
+            "pane on the rail:\n{screen}"
+        );
         assert!(screen.contains("2 panes"), "tab pane count:\n{screen}");
+        let ws_row = buffer_lines(&terminal)
+            .into_iter()
+            .find(|l| l.contains("mothership"))
+            .unwrap();
+        assert!(
+            !ws_row.contains("3 panes"),
+            "no duplicate count in the workspace right column: {ws_row:?}"
+        );
         let lines = buffer_lines(&terminal);
+        let agent_row = lines.iter().find(|l| l.contains("✓ claude")).unwrap();
+        assert!(
+            agent_row.contains("claude · idle"),
+            "agent pane meta like the built-in: {agent_row:?}"
+        );
         let pane2 = lines.iter().find(|l| l.contains("pane 2")).unwrap();
         assert!(pane2.contains("shell"), "agentless column: {pane2:?}");
+        assert!(
+            !pane2.contains("· idle"),
+            "shell panes carry no status text: {pane2:?}"
+        );
     }
 
     #[test]
@@ -477,9 +599,9 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▼ - mothership"), "screen:\n{screen}");
-        assert!(screen.contains("▼ + main"), "screen:\n{screen}");
-        assert!(screen.contains("o pane 1"), "screen:\n{screen}");
+        assert!(screen.contains("▾ o mothership"), "screen:\n{screen}");
+        assert!(screen.contains("├── | main"), "screen:\n{screen}");
+        assert!(screen.contains("v claude"), "screen:\n{screen}");
     }
 
     #[test]
@@ -492,8 +614,12 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &view);
         let screen = screen(&terminal);
-        assert!(screen.contains("▼ mothership"), "no icon:\n{screen}");
+        assert!(screen.contains("▾ mothership"), "no icon:\n{screen}");
         assert!(!screen.contains("panes"), "no pane counts:\n{screen}");
+        assert!(
+            !screen.contains("mothership ("),
+            "no label suffix either:\n{screen}"
+        );
     }
 
     #[test]
@@ -513,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn working_status_icon_is_green_unless_no_color() {
+    fn working_status_icon_is_yellow_unless_no_color() {
         let mut app = sample_app();
         let colored = ViewOptions {
             color: true,
@@ -521,17 +647,21 @@ mod tests {
         };
         let terminal = render_with(80, 24, &mut app, &colored);
         let lines = buffer_lines(&terminal);
-        let y = lines.iter().position(|l| l.contains("● main")).unwrap() as u16;
-        let x = lines[y as usize].chars().position(|c| c == '●').unwrap() as u16;
+        let y = lines.iter().position(|l| l.contains("⠋ main")).unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == '⠋').unwrap() as u16;
         let style = terminal.backend().buffer().cell((x, y)).unwrap().style();
-        assert_eq!(style.fg, Some(Color::Green), "colored icon");
+        assert_eq!(
+            style.fg,
+            Some(Color::Yellow),
+            "working spinner is yellow, like the built-in"
+        );
 
         let terminal = render_with(80, 24, &mut app, &plain_view());
         let lines = buffer_lines(&terminal);
-        let y = lines.iter().position(|l| l.contains("● main")).unwrap() as u16;
-        let x = lines[y as usize].chars().position(|c| c == '●').unwrap() as u16;
+        let y = lines.iter().position(|l| l.contains("⠋ main")).unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == '⠋').unwrap() as u16;
         let style = terminal.backend().buffer().cell((x, y)).unwrap().style();
-        assert_ne!(style.fg, Some(Color::Green), "NO_COLOR keeps default fg");
+        assert_ne!(style.fg, Some(Color::Yellow), "NO_COLOR keeps default fg");
     }
 
     #[test]
@@ -592,15 +722,15 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         let lines = buffer_lines(&terminal);
-        // "○ pane 1" (indented) is the list row; the detail panel header
+        // "✓ claude" (indented) is the list row; the detail panel header
         // also says "pane 1" but without the icon.
         let cursor_y = lines
             .iter()
-            .position(|line| line.contains("○ pane 1"))
+            .position(|line| line.contains("✓ claude"))
             .expect("cursor row must be on screen") as u16;
         let x = lines[cursor_y as usize]
             .chars()
-            .position(|c| c == 'p')
+            .position(|c| c == 'c')
             .unwrap() as u16;
         let style = buffer.cell((x, cursor_y)).unwrap().style();
         assert!(
@@ -615,9 +745,9 @@ mod tests {
         let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
 
-        let current = lines.iter().find(|l| l.contains("○ pane 1")).unwrap();
+        let current = lines.iter().find(|l| l.contains("✓ claude")).unwrap();
         assert!(current.contains("→"), "current row: {current:?}");
-        let other = lines.iter().find(|l| l.contains("○ pane 2")).unwrap();
+        let other = lines.iter().find(|l| l.contains("✓ pane 2")).unwrap();
         assert!(!other.contains("→"), "other row: {other:?}");
     }
 
@@ -690,12 +820,12 @@ mod tests {
         let mut app = sample_app();
         let terminal = render(80, 24, &mut app);
         let lines = buffer_lines(&terminal);
-        // The first inner line is the list, not a prompt (the footer's
+        // The first line is the list, not a prompt (the footer's
         // "/ search" hint is elsewhere).
         assert!(
-            lines[1].contains("mothership"),
-            "first inner line: {:?}",
-            lines[1]
+            lines[0].contains("mothership"),
+            "first line: {:?}",
+            lines[0]
         );
     }
 
@@ -743,16 +873,15 @@ mod tests {
     #[test]
     fn wide_characters_keep_the_right_column_aligned() {
         let tree = Tree::build(
+            vec![workspace("w1", 1, "w", true)],
+            // Wide-charactered TAB labels: tab rows carry the "N panes"
+            // right column whose alignment the width math protects.
             vec![
-                workspace("w1", 1, "日本語のラベル", true),
-                workspace("w2", 2, "ascii", false),
-            ],
-            vec![
-                tab("w1:t1", "w1", 1, "t", true),
-                tab("w2:t1", "w2", 1, "t", true),
+                tab("w1:t1", "w1", 1, "日本語のラベル", true),
+                tab("w1:t2", "w1", 2, "ascii", false),
             ],
             vec![],
-            InitialExpansion::None,
+            InitialExpansion::All,
         );
         let mut app = App::new(tree, EnterOnBranch::Jump);
         let terminal = render(50, 10, &mut app); // < 60 cols: list only
@@ -762,10 +891,10 @@ mod tests {
         // by a single character.
         let jp = lines.iter().find(|l| l.contains('日')).unwrap();
         let ascii = lines.iter().find(|l| l.contains("ascii")).unwrap();
-        let jp_body = jp.trim_end_matches([' ', '│']);
-        let ascii_body = ascii.trim_end_matches([' ', '│']);
-        assert!(jp_body.ends_with("0 panes"), "jp row: {jp:?}");
-        assert!(ascii_body.ends_with("0 panes"), "ascii row: {ascii:?}");
+        let jp_body = jp.trim_end_matches(' ');
+        let ascii_body = ascii.trim_end_matches(' ');
+        assert!(jp_body.ends_with("2 panes"), "jp row: {jp:?}");
+        assert!(ascii_body.ends_with("2 panes"), "ascii row: {ascii:?}");
     }
 
     #[test]
@@ -787,8 +916,88 @@ mod tests {
             screen.contains("pane 20"),
             "row under cursor must be scrolled into view:\n{screen}"
         );
-        // 12 rows minus top/bottom border (2) and footer (2) -> 8.
-        assert_eq!(app.viewport_height, 8);
+        // 12 rows minus the footer (2) -> 10; herdr owns the pane border.
+        assert_eq!(app.viewport_height, 10);
+    }
+
+    #[test]
+    fn no_own_frame_but_separators_carry_accent_and_workspaces_bold() {
+        let mut app = sample_app();
+        let colored = ViewOptions {
+            color: true,
+            ..plain_view()
+        };
+        let terminal = render_with(80, 24, &mut app, &colored);
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(&terminal);
+
+        // herdr draws the pane chrome; our canvas starts with content.
+        assert!(
+            lines[0].contains("mothership"),
+            "no own border, first line is the list: {:?}",
+            lines[0]
+        );
+
+        // The footer's top separator keeps the accent color.
+        let sep_y = lines.iter().position(|l| l.starts_with('─')).unwrap() as u16;
+        assert_eq!(
+            buffer.cell((0, sep_y)).unwrap().style().fg,
+            Some(Color::Cyan),
+            "footer separator carries the accent color"
+        );
+
+        let y = lines
+            .iter()
+            .position(|l| l.contains("○ mothership"))
+            .unwrap() as u16;
+        let x = lines[y as usize].chars().position(|c| c == 'm').unwrap() as u16;
+        assert!(
+            buffer
+                .cell((x, y))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "workspace labels are bold"
+        );
+
+        // NO_COLOR: no cyan separator, structure modifiers stay.
+        let terminal = render_with(80, 24, &mut app, &plain_view());
+        assert_ne!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((0, sep_y))
+                .unwrap()
+                .style()
+                .fg,
+            Some(Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn footer_keys_are_bold_and_labels_dim() {
+        let mut app = sample_app();
+        let terminal = render(80, 24, &mut app);
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(&terminal);
+        let y = lines
+            .iter()
+            .position(|l| l.contains("enter accept"))
+            .unwrap() as u16;
+        // Column index in chars, not bytes: "↑/↓" earlier in the line is
+        // multi-byte.
+        let key_x = lines[y as usize]
+            .split("enter")
+            .next()
+            .unwrap()
+            .chars()
+            .count() as u16;
+        let style = buffer.cell((key_x, y)).unwrap().style();
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "hint keys are bold: {style:?}"
+        );
     }
 
     #[test]

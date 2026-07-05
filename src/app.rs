@@ -52,6 +52,8 @@ pub struct App {
     /// Rows the list area can show; set by the UI on each draw so that
     /// page movements track the real terminal size.
     pub viewport_height: u16,
+    /// Redraw counter driving the working-status spinner (~8/s).
+    pub tick: u32,
     enter_on_branch: EnterOnBranch,
     pub mode: Mode,
     pub query: String,
@@ -71,6 +73,7 @@ impl App {
             cursor,
             pending: Vec::new(),
             viewport_height: 0,
+            tick: 0,
             enter_on_branch,
             mode: Mode::Normal,
             query: String::new(),
@@ -80,6 +83,24 @@ impl App {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// Swaps in a freshly fetched snapshot (the built-in recomputes its
+    /// rows from live state every frame; polling is our equivalent).
+    /// Preserves the user's expansion choices, the node under the cursor,
+    /// and the active search filter.
+    pub fn replace_tree(&mut self, mut tree: Tree) {
+        tree.adopt_expansion_from(&self.tree);
+        let cursor_target = self
+            .rows
+            .get(self.cursor)
+            .map(|row| row.focus_target.clone());
+        self.tree = tree;
+        self.tree_is_empty = self.tree.visible_rows().is_empty();
+        self.rows = self.tree.visible_rows_filtered(&self.query);
+        self.cursor = cursor_target
+            .and_then(|target| self.rows.iter().position(|row| row.focus_target == target))
+            .unwrap_or_else(|| self.cursor.min(self.rows.len().saturating_sub(1)));
     }
 
     pub fn handle_key(&mut self, keymaps: &Keymaps, key: KeyPress) -> Outcome {
@@ -281,12 +302,14 @@ mod tests {
             cwd: None,
             label: None,
             title: None,
+            custom_status: None,
             terminal_id: format!("term_{id}"),
         }
     }
 
-    /// Rows with All expansion:
-    /// 0 alpha / 1 a-one / 2 pane 1(focused) / 3 a-two / 4 pane 2 / 5 beta / 6 b-one / 7 pane 1
+    /// Rows with All expansion (beta is single-tab, so its tab row is
+    /// skipped):
+    /// 0 alpha / 1 a-one / 2 pane 1(focused) / 3 a-two / 4 pane 2 / 5 beta / 6 pane 1
     fn tree(initial: InitialExpansion) -> Tree {
         Tree::build(
             vec![
@@ -361,11 +384,11 @@ mod tests {
         press(&mut app, &keymaps, "ctrl+n");
         assert_eq!(app.cursor, 2);
         press(&mut app, &keymaps, "shift+g");
-        assert_eq!(app.cursor, 7, "bottom hits the last visible row");
+        assert_eq!(app.cursor, 6, "bottom hits the last visible row");
         press(&mut app, &keymaps, "down");
-        assert_eq!(app.cursor, 7, "down clamps at the bottom");
+        assert_eq!(app.cursor, 6, "down clamps at the bottom");
         press(&mut app, &keymaps, "ctrl+u");
-        assert_eq!(app.cursor, 4, "page up moves by viewport height");
+        assert_eq!(app.cursor, 3, "page up moves by viewport height");
     }
 
     #[test]
@@ -377,8 +400,8 @@ mod tests {
         assert_eq!(cursor_label(&app), "alpha");
         press(&mut app, &keymaps, "h");
         assert_eq!(cursor_label(&app), "alpha", "cursor stays on the branch");
-        // alpha, beta, b-one, pane 1 — alpha's own subtree is hidden.
-        assert_eq!(app.rows().len(), 4);
+        // alpha, beta, pane 1 — alpha's own subtree is hidden.
+        assert_eq!(app.rows().len(), 3);
     }
 
     #[test]
@@ -414,9 +437,9 @@ mod tests {
 
         press(&mut app, &keymaps, "home");
         press(&mut app, &keymaps, "space");
-        assert_eq!(app.rows().len(), 4);
+        assert_eq!(app.rows().len(), 3);
         press(&mut app, &keymaps, "space");
-        assert_eq!(app.rows().len(), 8);
+        assert_eq!(app.rows().len(), 7);
     }
 
     #[test]
@@ -426,7 +449,10 @@ mod tests {
 
         assert_eq!(
             press(&mut app, &keymaps, "enter"),
-            Outcome::Focus(FocusTarget::Pane("w1:p1".to_string()))
+            Outcome::Focus(FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            })
         );
     }
 
@@ -454,13 +480,16 @@ mod tests {
 
         press(&mut app, &keymaps, "home");
         assert_eq!(press(&mut app, &keymaps, "enter"), Outcome::Continue);
-        assert_eq!(app.rows().len(), 4, "enter collapsed the workspace");
+        assert_eq!(app.rows().len(), 3, "enter collapsed the workspace");
 
         // Panes still jump.
         let mut app2 = App::new(tree(InitialExpansion::All), EnterOnBranch::Expand);
         assert_eq!(
             press(&mut app2, &keymaps, "enter"),
-            Outcome::Focus(FocusTarget::Pane("w1:p1".to_string()))
+            Outcome::Focus(FocusTarget::Pane {
+                pane_id: "w1:p1".to_string(),
+                tab_id: "w1:t1".to_string()
+            })
         );
     }
 
@@ -519,7 +548,7 @@ mod tests {
 
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(app.query, "");
-        assert_eq!(app.rows().len(), 8, "clear restores the full tree");
+        assert_eq!(app.rows().len(), 7, "clear restores the full tree");
         assert_eq!(app.mode, Mode::Search, "clear keeps the prompt focused");
     }
 
@@ -570,7 +599,7 @@ mod tests {
         press(&mut app, &keymaps, "backspace");
         press(&mut app, &keymaps, "backspace");
         press(&mut app, &keymaps, "backspace");
-        assert_eq!(app.rows().len(), 8, "recovers once the query shrinks");
+        assert_eq!(app.rows().len(), 7, "recovers once the query shrinks");
     }
 
     #[test]
@@ -587,6 +616,74 @@ mod tests {
             2,
             "clearing goes back to the collapsed view (alpha, beta)"
         );
+    }
+
+    #[test]
+    fn replace_tree_updates_data_but_keeps_cursor_expansion_and_filter() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        // Park the cursor on "a-two" and collapse it.
+        press(&mut app, &keymaps, "home");
+        for _ in 0..3 {
+            press(&mut app, &keymaps, "j");
+        }
+        assert_eq!(cursor_label(&app), "a-two");
+        press(&mut app, &keymaps, "h");
+        assert_eq!(app.rows().len(), 6, "pane 2 hidden under collapsed a-two");
+
+        // Fresh snapshot: same session, but beta's pane got an agent and
+        // started working.
+        let mut beta_pane = pane("w2:p1", "w2:t1", "w2", false);
+        beta_pane.agent = Some("claude".to_string());
+        beta_pane.agent_status = AgentStatus::Working;
+        let refreshed = Tree::build(
+            vec![
+                workspace("w1", 1, "alpha", true),
+                workspace("w2", 2, "beta", false),
+            ],
+            vec![
+                tab("w1:t1", "w1", 1, "a-one", true),
+                tab("w1:t2", "w1", 2, "a-two", false),
+                tab("w2:t1", "w2", 1, "b-one", true),
+            ],
+            vec![
+                pane("w1:p1", "w1:t1", "w1", true),
+                pane("w1:p2", "w1:t2", "w1", false),
+                beta_pane,
+            ],
+            InitialExpansion::All,
+        );
+        app.replace_tree(refreshed);
+
+        assert_eq!(cursor_label(&app), "a-two", "cursor stays on its node");
+        assert_eq!(
+            app.rows().len(),
+            6,
+            "user's collapse of a-two survives the refresh"
+        );
+        let beta_row = app.rows().last().unwrap();
+        assert_eq!(beta_row.label, "claude", "refreshed label");
+        assert_eq!(
+            beta_row.agent_status,
+            AgentStatus::Working,
+            "refreshed status"
+        );
+    }
+
+    #[test]
+    fn replace_tree_reapplies_the_search_filter() {
+        let keymaps = default_keymaps();
+        let mut app = app();
+
+        press(&mut app, &keymaps, "/");
+        type_text(&mut app, &keymaps, "two");
+        assert_eq!(app.rows().len(), 2);
+
+        app.replace_tree(tree(InitialExpansion::All));
+        let labels: Vec<&str> = app.rows().iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["alpha", "a-two"], "filter survives refresh");
+        assert_eq!(app.query, "two");
     }
 
     #[test]

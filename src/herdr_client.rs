@@ -79,6 +79,9 @@ pub struct PaneInfo {
     pub label: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// User/plugin-set status text; wins over the agent state name.
+    #[serde(default)]
+    pub custom_status: Option<String>,
     pub terminal_id: String,
 }
 
@@ -105,14 +108,17 @@ fn request_line(id: &str, method: &str, params: Value) -> String {
 fn parse_response(line: &str, expected_id: &str) -> Result<Value> {
     let envelope: Value =
         serde_json::from_str(line).context("herdr sent a response that is not valid JSON")?;
-    let id = envelope["id"].as_str().unwrap_or_default();
-    if id != expected_id {
-        bail!("herdr response id {id:?} does not match request id {expected_id:?}");
-    }
+    // Errors first: herdr answers requests it cannot even parse (e.g. a
+    // method this version does not know) with an EMPTY id, and that error
+    // message beats an "id mismatch" complaint every time.
     if let Some(error) = envelope.get("error") {
         let code = error["code"].as_str().unwrap_or("unknown_error");
         let message = error["message"].as_str().unwrap_or("no message");
         bail!("herdr error {code}: {message}");
+    }
+    let id = envelope["id"].as_str().unwrap_or_default();
+    if id != expected_id {
+        bail!("herdr response id {id:?} does not match request id {expected_id:?}");
     }
     match envelope.get("result") {
         Some(result) => Ok(result.clone()),
@@ -276,6 +282,20 @@ mod tests {
         let err = parse_response(r#"{"id":"2","result":{"type":"tab_list","tabs":[]}}"#, "1")
             .unwrap_err();
         assert!(err.to_string().contains("id"), "error: {err}");
+    }
+
+    #[test]
+    fn error_envelope_with_empty_id_still_surfaces_the_error() {
+        // herdr 0.7.1 answers unknown methods with id "" — the message must
+        // not be masked by an id-mismatch complaint.
+        let err = parse_response(
+            r#"{"id":"","error":{"code":"invalid_request","message":"invalid request: unknown variant `pane.focus`"}}"#,
+            "4",
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("invalid_request"), "error: {text}");
+        assert!(text.contains("pane.focus"), "error: {text}");
     }
 
     #[test]
