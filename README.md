@@ -38,7 +38,7 @@ This plugin binds to a separate key and lets you rebind every action — `up`, `
 - State filters (`b`/`w`/`i`/`d`, rebindable): show only blocked / working / idle / done agents; `a` clears.
 - Live view: statuses, labels, and panes refresh about once a second while open, with an animated spinner for working agents and per-branch activity summaries (`2 working · 1 blocked`).
 - Jumps to any node: workspaces, tabs, and panes — including agentless panes, via the socket-only `pane.focus` (with a `tab.focus` fallback for herdr ≤ 0.7.1).
-- A detail panel shows the selected node's id, agent, status, and cwd.
+- A detail panel shows the selected node's id, agent, status (with its colored icon and the working spinner), cwd, and — inside a git repository — the current branch, read straight from `.git/HEAD` (no `git` subprocess; linked worktrees and detached HEADs included). Worktree workspaces also show their repo and branch.
 - Status icons in three sets (`nerd` / `ascii` / `emoji`), status colors, `NO_COLOR` support, and `[display]` toggles for icons, pane counts, and cwd.
 - No external runtime dependencies (single Rust binary; TUI via [`ratatui`](https://ratatui.rs/)).
 - All keys user-configurable, including chords like `g g`.

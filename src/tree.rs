@@ -414,18 +414,32 @@ impl Tree {
                 // marker of its own, filters included.
                 is_current: ws_info.is_some_and(|i| i.focused),
                 focus_target: FocusTarget::Workspace(ws.workspace_id.clone()),
-                detail: vec![
-                    ("id", ws.workspace_id.clone()),
-                    (
-                        "tabs",
-                        ws_info
-                            .map(|i| i.tab_count)
-                            .unwrap_or(ws.tabs.len())
-                            .to_string(),
-                    ),
-                    ("panes", ws_pane_count.to_string()),
-                    ("status", ws_status.name().to_string()),
-                ],
+                detail: {
+                    let mut detail = vec![
+                        ("id", ws.workspace_id.clone()),
+                        (
+                            "tabs",
+                            ws_info
+                                .map(|i| i.tab_count)
+                                .unwrap_or(ws.tabs.len())
+                                .to_string(),
+                        ),
+                        ("panes", ws_pane_count.to_string()),
+                        ("status", ws_status.name().to_string()),
+                    ];
+                    if let Some(worktree) = ws_info.and_then(|i| i.worktree.as_ref()) {
+                        let repo = if worktree.is_linked_worktree {
+                            format!("{} (worktree)", worktree.repo_name)
+                        } else {
+                            worktree.repo_name.clone()
+                        };
+                        detail.push(("repo", repo));
+                    }
+                    if let Some(branch) = ws_info.and_then(|i| i.branch.clone()) {
+                        detail.push(("branch", branch));
+                    }
+                    detail
+                },
                 cwd: None,
                 custom_status: None,
                 last_child: false,
@@ -503,6 +517,9 @@ impl Tree {
                     ];
                     if let Some(cwd) = &pane.info.cwd {
                         detail.push(("cwd", cwd.clone()));
+                    }
+                    if let Some(branch) = &pane.info.branch {
+                        detail.push(("branch", branch.clone()));
                     }
                     if let Some(title) = &pane.info.title {
                         if !title.is_empty() {
@@ -771,6 +788,8 @@ mod tests {
             tab_count: 0,
             active_tab_id: String::new(),
             agent_status: AgentStatus::Unknown,
+            worktree: None,
+            branch: None,
         }
     }
 
@@ -803,10 +822,12 @@ mod tests {
             display_agent: None,
             agent_status: AgentStatus::Idle,
             cwd: None,
+            foreground_cwd: None,
             label: None,
             title: None,
             custom_status: None,
             terminal_id: format!("term_{id}"),
+            branch: None,
         }
     }
 
@@ -1272,6 +1293,58 @@ mod tests {
             agentless.iter().all(|(k, _)| *k != "cwd" && *k != "title"),
             "absent metadata stays out of the panel: {agentless:?}"
         );
+    }
+
+    #[test]
+    fn pane_detail_includes_the_branch_when_resolved() {
+        let mut on_branch = pane("w1:p1", "w1:t1", "w1", true, Some("claude"));
+        on_branch.cwd = Some("/home/u/repo".to_string());
+        on_branch.branch = Some("feature/x".to_string());
+        let tree = Tree::build(
+            vec![workspace("w1", 1, "alpha", true)],
+            vec![tab("w1:t1", "w1", 1, "a-one", true, 2)],
+            vec![on_branch, pane("w1:p2", "w1:t1", "w1", false, None)],
+            InitialExpansion::All,
+        );
+        let rows = tree.visible_rows();
+
+        // Branch sits right under cwd — they describe the same place.
+        let detail = &rows[1].detail;
+        let cwd_idx = detail.iter().position(|(k, _)| *k == "cwd").unwrap();
+        assert_eq!(detail[cwd_idx + 1], ("branch", "feature/x".to_string()));
+        // No branch resolved (p2) → no branch line.
+        assert!(rows[2].detail.iter().all(|(k, _)| *k != "branch"));
+    }
+
+    #[test]
+    fn workspace_detail_includes_worktree_repo_and_branch() {
+        let mut ws = workspace("w1", 1, "alpha", true);
+        ws.worktree = Some(crate::herdr_client::WorkspaceWorktree {
+            repo_name: "herdr".to_string(),
+            checkout_path: "/home/u/src/herdr-wt/fix".to_string(),
+            is_linked_worktree: true,
+        });
+        ws.branch = Some("fix/thing".to_string());
+        let tree = Tree::build(
+            vec![ws, workspace("w2", 2, "beta", false)],
+            vec![
+                tab("w1:t1", "w1", 1, "a-one", true, 1),
+                tab("w2:t1", "w2", 1, "b-one", true, 1),
+            ],
+            vec![
+                pane("w1:p1", "w1:t1", "w1", true, None),
+                pane("w2:p1", "w2:t1", "w2", false, None),
+            ],
+            InitialExpansion::None,
+        );
+        let rows = tree.visible_rows();
+
+        let detail = &rows[0].detail;
+        assert!(detail.contains(&("repo", "herdr (worktree)".to_string())));
+        assert!(detail.contains(&("branch", "fix/thing".to_string())));
+        // Plain workspaces stay as before.
+        let plain = &rows[1].detail;
+        assert!(plain.iter().all(|(k, _)| *k != "repo" && *k != "branch"));
     }
 
     #[test]
