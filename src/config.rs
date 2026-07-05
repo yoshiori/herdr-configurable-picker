@@ -29,7 +29,7 @@ pub const DEFAULT_CONFIG_TOML: &str = r##"# herdr-configurable-picker configurat
 # Movement
 down      = ["down", "ctrl+n", "j"]
 up        = ["up", "ctrl+p", "k"]
-page_down = ["ctrl+d", "pagedown"]
+page_down = ["pagedown", "ctrl+v"]
 page_up   = ["ctrl+u", "pageup"]
 top       = ["home"]
 bottom    = ["end", "shift+g"]
@@ -45,18 +45,22 @@ cancel = ["esc", "ctrl+c", "ctrl+g"]
 
 # Search. While the search prompt is focused, printable keys type into the
 # query; search_clear / search_exit and non-printable normal-mode keys
-# (ctrl+n, arrows, enter, ...) still work.
-search_start = ["/"]
+# (ctrl+n, arrows, enter, ...) still work. ctrl+s: with an IME active,
+# bare punctuation/letter keys get swallowed; ctrl+LETTER passes through.
+search_start = ["/", "ctrl+s"]
 search_clear = ["ctrl+u"]
 search_exit  = ["esc"]
 
 # State filters: show only nodes whose agents are in the given state.
 # Mutually exclusive with text search (starting one drops the other).
-filter_blocked = ["b"]
-filter_working = ["w"]
-filter_idle    = ["i"]
-filter_done    = ["d"]
-filter_clear   = ["a", "backspace"]
+# The ctrl aliases are IME-safe like ctrl+s above. filter_idle binds
+# "tab" because ctrl+i IS tab to a terminal (both send 0x09) — pressing
+# ctrl+i works. filter_done owns ctrl+d (page_down has ctrl+v instead).
+filter_blocked = ["b", "ctrl+b"]
+filter_working = ["w", "ctrl+w"]
+filter_idle    = ["i", "tab"]
+filter_done    = ["d", "ctrl+d"]
+filter_clear   = ["a", "backspace", "ctrl+a"]
 
 [display]
 show_pane_count   = true
@@ -174,7 +178,7 @@ impl Default for KeysConfig {
         KeysConfig {
             down: keys(&["down", "ctrl+n", "j"]),
             up: keys(&["up", "ctrl+p", "k"]),
-            page_down: keys(&["ctrl+d", "pagedown"]),
+            page_down: keys(&["pagedown", "ctrl+v"]),
             page_up: keys(&["ctrl+u", "pageup"]),
             top: keys(&["home"]),
             bottom: keys(&["end", "shift+g"]),
@@ -183,14 +187,14 @@ impl Default for KeysConfig {
             toggle: keys(&["space"]),
             accept: keys(&["enter"]),
             cancel: keys(&["esc", "ctrl+c", "ctrl+g"]),
-            search_start: keys(&["/"]),
+            search_start: keys(&["/", "ctrl+s"]),
             search_clear: keys(&["ctrl+u"]),
             search_exit: keys(&["esc"]),
-            filter_blocked: keys(&["b"]),
-            filter_working: keys(&["w"]),
-            filter_idle: keys(&["i"]),
-            filter_done: keys(&["d"]),
-            filter_clear: keys(&["a", "backspace"]),
+            filter_blocked: keys(&["b", "ctrl+b"]),
+            filter_working: keys(&["w", "ctrl+w"]),
+            filter_idle: keys(&["i", "tab"]),
+            filter_done: keys(&["d", "ctrl+d"]),
+            filter_clear: keys(&["a", "backspace", "ctrl+a"]),
         }
     }
 }

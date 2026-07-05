@@ -566,10 +566,11 @@ mod tests {
         press(&mut app, &keymaps, "down");
         assert_eq!(app.cursor, 6, "down clamps at the bottom");
         // Half a viewport per page, like the built-in's ctrl+d/ctrl+u.
+        // (Paging DOWN defaults to ctrl+v — ctrl+d belongs to filter_done.)
         app.viewport_height = 4;
         press(&mut app, &keymaps, "ctrl+u");
         assert_eq!(app.cursor, 4, "page up moves by half the viewport");
-        press(&mut app, &keymaps, "ctrl+d");
+        press(&mut app, &keymaps, "ctrl+v");
         assert_eq!(app.cursor, 6, "page down moves by half the viewport");
     }
 

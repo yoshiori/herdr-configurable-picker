@@ -9,7 +9,7 @@ The built-in herdr goto (`prefix+g`, `Mode::Navigator` internally) has hard-code
 - `Ctrl+n` / `Ctrl+p` only when the search field is focused (a workaround for the search-mode catch-all character handler, not a design choice).
 - No expansion / collapse of the tree.
 
-This plugin provides a **drop-in alternative** bound to a separate key (recommended: `prefix+alt+g`), with:
+This plugin provides a **drop-in alternative** bound to a separate key (recommended: `prefix+ctrl+g`), with:
 
 1. **No external dependencies** at runtime — one static binary, no `fzf`, no `jq`. TUI rendered by the plugin itself.
 2. **Tree structure** — workspace / tab / pane hierarchy with collapse/expand, matching the built-in goto's information model.
@@ -69,7 +69,7 @@ Verified against herdr source: `[[keys.command]]` supports `type = "shell" | "pa
 
 ```toml
 [[keys.command]]
-key = "prefix+alt+g"
+key = "prefix+ctrl+g"
 type = "plugin_action"
 command = "yoshiori.herdr-configurable-picker.open"
 description = "configurable goto picker"
@@ -84,7 +84,7 @@ Owned by the plugin. Seeded on first run. Not validated by herdr.
 # Movement
 down       = ["down", "ctrl+n", "j"]
 up         = ["up", "ctrl+p", "k"]
-page_down  = ["ctrl+d", "pagedown"]
+page_down  = ["pagedown", "ctrl+v"]
 page_up    = ["ctrl+u", "pageup"]
 top        = ["home"]
 bottom     = ["end", "shift+g"]
@@ -99,17 +99,17 @@ accept     = ["enter"]
 cancel     = ["esc", "ctrl+c", "ctrl+g"]
 
 # Search
-search_start = ["/"]
+search_start = ["/", "ctrl+s"]
 search_clear = ["ctrl+u"]     # only active while search mode is focused
 search_exit  = ["esc"]        # returns to normal mode, keeps current filter result
 
 # State filters (the built-in's b/w/i/d/a): show only nodes whose agents
 # are in the given state. Mutually exclusive with text search.
-filter_blocked = ["b"]
-filter_working = ["w"]
-filter_idle    = ["i"]
-filter_done    = ["d"]
-filter_clear   = ["a"]
+filter_blocked = ["b", "ctrl+b"]
+filter_working = ["w", "ctrl+w"]
+filter_idle    = ["i", "tab"]
+filter_done    = ["d", "ctrl+d"]
+filter_clear   = ["a", "backspace", "ctrl+a"]
 
 [display]
 show_pane_count   = true
